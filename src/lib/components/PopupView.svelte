@@ -164,19 +164,14 @@
 		margin: 0;
 		padding: 0;
 		overflow: hidden;
+		background: transparent !important;
 		font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 		-webkit-user-select: none;
 		user-select: none;
 	}
 
-	:global(body.popup-window) {
-		background-color: var(--popup-bg, #2c2c2e);
-		min-height: 100vh;
-	}
-
 	@media (prefers-color-scheme: dark) {
 		:global(body.popup-window) {
-			--popup-bg: #2c2c2e;
 			--popup-border: rgba(255, 255, 255, 0.15);
 			--text-primary: #f5f5f7;
 			--text-secondary: #8e8e93;
@@ -185,7 +180,6 @@
 
 	@media (prefers-color-scheme: light) {
 		:global(body.popup-window) {
-			--popup-bg: #ffffff;
 			--popup-border: rgba(0, 0, 0, 0.12);
 			--text-primary: #1d1d1f;
 			--text-secondary: #86868b;

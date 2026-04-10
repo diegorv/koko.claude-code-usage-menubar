@@ -3,6 +3,8 @@ pub(crate) mod tray_icon;
 
 use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    utils::{WindowEffect, WindowEffectState},
+    window::EffectsBuilder,
     Manager, PhysicalPosition, WebviewUrl, WebviewWindowBuilder,
 };
 
@@ -90,6 +92,15 @@ fn toggle_popup(app: &tauri::AppHandle, click_position: PhysicalPosition<f64>) {
         .resizable(false)
         .decorations(false)
         .shadow(false)
+        .transparent(true)
+        .background_color(tauri::window::Color(0, 0, 0, 0))
+        .effects(
+            EffectsBuilder::new()
+                .effect(WindowEffect::Popover)
+                .state(WindowEffectState::Active)
+                .radius(12.0)
+                .build(),
+        )
         .always_on_top(true)
         .skip_taskbar(true)
         .visible(false)
