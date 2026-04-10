@@ -175,6 +175,7 @@
 			--popup-border: rgba(255, 255, 255, 0.15);
 			--text-primary: #ffffff;
 			--text-secondary: #d0d0d5;
+			--segment-off: rgba(255, 255, 255, 0.2);
 		}
 	}
 
@@ -183,6 +184,7 @@
 			--popup-border: rgba(0, 0, 0, 0.12);
 			--text-primary: #000000;
 			--text-secondary: #505055;
+			--segment-off: rgba(0, 0, 0, 0.2);
 		}
 	}
 
