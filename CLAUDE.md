@@ -24,15 +24,32 @@ Fix: add the window label (e.g. `"popup"`) to the `windows` array.
 To get a popup that looks like a native macOS menu (blurred background, rounded corners, no gray rectangle):
 
 1. `tauri.conf.json`: `"macOSPrivateApi": true`
-2. `Cargo.toml`: `tauri = { features = ["macos-private-api", ...] }`
+2. `Cargo.toml`: `tauri = { features = ["macos-private-api", ...] }` and `window-vibrancy = "0.7"` under `[target.'cfg(target_os = "macos")'.dependencies]`
 3. `WebviewWindowBuilder`:
    - `.transparent(true)`
    - `.background_color(tauri::window::Color(0, 0, 0, 0))` — **required**, not optional. `transparent(true)` alone only makes the NSWindow transparent; the WKWebView on top stays opaque gray unless you also set an alpha-0 background color (wry only calls `webview.setOpaque(false)` when `background_color` is explicitly set).
    - `.shadow(false)` — with `shadow(true)` on an undecorated transparent window you hit the Sonoma shadow-ghosting bug ([tauri#8255](https://github.com/tauri-apps/tauri/issues/8255)).
-   - `.effects(EffectsBuilder::new().effect(WindowEffect::Popover).state(WindowEffectState::Active).radius(12.0).build())` — this gives you the native `NSVisualEffectView` vibrancy (same component macOS menus use), with real window-level rounded corners and automatic light/dark adaptation.
-4. CSS: don't try to simulate glassmorphism with `backdrop-filter` + `rgba` backgrounds. The native effect does it better and avoids the gray rectangle bleed-through. Keep the container CSS minimal — just padding and text color — and let the native effect show through.
+4. **After the window is built**, call `apply_liquid_glass` from the `window-vibrancy` crate instead of Tauri's built-in `WindowEffect` enum. The built-in `Popover`/`HudWindow`/`Sidebar`/`Selection` effects all produce a heavily tinted `NSVisualEffectView` that looks opaque over dark backgrounds — they do not give real glassmorphism. The `window-vibrancy` crate exposes `NSGlassEffectView` (macOS 26.0+, the Liquid Glass material used by Control Center, the Dock, etc.) which is genuinely translucent over any background. Example:
+   ```rust
+   #[cfg(target_os = "macos")]
+   use window_vibrancy::{apply_liquid_glass, NSGlassEffectViewStyle};
 
-Window effects only apply when the window is created, so after changing this you must fully restart `pnpm tauri dev` — not just HMR.
+   #[cfg(target_os = "macos")]
+   {
+       let _ = apply_liquid_glass(
+           &window,
+           NSGlassEffectViewStyle::Clear,   // real see-through glass
+           Some((20, 20, 25, 180)),         // dark tint to keep text legible over light backdrops
+           Some(12.0),                      // corner radius
+       );
+   }
+   ```
+   - `NSGlassEffectViewStyle::Clear` is the most translucent variant. By itself it's invisible over light backdrops (text sums out), so pair it with a dark `tint_color` RGBA. The tint is a fixed overlay on top of the glass — the blur stays intact, you're just protecting contrast.
+   - Use the *published* crate (`0.7.x` on crates.io), not the `dev` branch — the API shape changed. In 0.7.1 you pass `&window` directly, the crate does the `raw_window_handle` dance internally.
+   - Requires macOS 26.0 (Tahoe) or newer. On earlier macOS versions `apply_liquid_glass` returns `Err(UnsupportedPlatformVersion)` — fall back to `apply_vibrancy` if you need to support older releases.
+5. CSS: don't try to simulate glassmorphism with `backdrop-filter` + `rgba` backgrounds. It reintroduces the gray rectangle bleed-through the native effect avoids. Keep the container CSS minimal — just padding and text color — and let the native effect show through. Also make sure `html, body { background: transparent !important; }`.
+
+Window effects only apply when the window is created, so after changing any of this you must fully restart `pnpm tauri dev` — not just HMR.
 
 ### Polling and rate limits
 

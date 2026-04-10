@@ -3,10 +3,11 @@ pub(crate) mod tray_icon;
 
 use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    utils::{WindowEffect, WindowEffectState},
-    window::EffectsBuilder,
     Manager, PhysicalPosition, WebviewUrl, WebviewWindowBuilder,
 };
+
+#[cfg(target_os = "macos")]
+use window_vibrancy::{apply_liquid_glass, NSGlassEffectViewStyle};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -94,13 +95,6 @@ fn toggle_popup(app: &tauri::AppHandle, click_position: PhysicalPosition<f64>) {
         .shadow(false)
         .transparent(true)
         .background_color(tauri::window::Color(0, 0, 0, 0))
-        .effects(
-            EffectsBuilder::new()
-                .effect(WindowEffect::Popover)
-                .state(WindowEffectState::Active)
-                .radius(12.0)
-                .build(),
-        )
         .always_on_top(true)
         .skip_taskbar(true)
         .visible(false)
@@ -108,6 +102,15 @@ fn toggle_popup(app: &tauri::AppHandle, click_position: PhysicalPosition<f64>) {
         .build();
 
         if let Ok(window) = window {
+            #[cfg(target_os = "macos")]
+            {
+                let _ = apply_liquid_glass(
+                    &window,
+                    NSGlassEffectViewStyle::Clear,
+                    Some((20, 20, 25, 180)),
+                    Some(12.0),
+                );
+            }
             position_popup(&window, click_position);
             let _ = window.show();
             let _ = window.set_focus();
