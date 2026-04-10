@@ -173,16 +173,16 @@
 	@media (prefers-color-scheme: dark) {
 		:global(body.popup-window) {
 			--popup-border: rgba(255, 255, 255, 0.15);
-			--text-primary: #f5f5f7;
-			--text-secondary: #8e8e93;
+			--text-primary: #ffffff;
+			--text-secondary: #d0d0d5;
 		}
 	}
 
 	@media (prefers-color-scheme: light) {
 		:global(body.popup-window) {
 			--popup-border: rgba(0, 0, 0, 0.12);
-			--text-primary: #1d1d1f;
-			--text-secondary: #86868b;
+			--text-primary: #000000;
+			--text-secondary: #505055;
 		}
 	}
 
