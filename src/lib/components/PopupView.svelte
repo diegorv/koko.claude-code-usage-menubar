@@ -328,7 +328,7 @@
 		width: 4px;
 		height: 4px;
 		border-radius: 50%;
-		background: #ffffff;
+		background: var(--text-primary);
 		animation: bounce 1.2s ease-in-out infinite;
 	}
 
