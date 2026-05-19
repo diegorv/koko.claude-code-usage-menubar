@@ -56,15 +56,33 @@ const TEXT_Y_OFFSET: i32 = -3 * SCALE as i32;
 const COLOR_SESSION: Rgba<u8> = Rgba([107, 127, 224, 255]);
 const COLOR_WEEKLY: Rgba<u8> = Rgba([192, 96, 208, 255]);
 const COLOR_SEGMENT_OFF: Rgba<u8> = Rgba([140, 140, 140, 80]);
-const COLOR_TEXT: Rgba<u8> = Rgba([0, 0, 0, 200]);
+const COLOR_TEXT_DARK_BG: Rgba<u8> = Rgba([235, 235, 235, 235]);
+const COLOR_TEXT_LIGHT_BG: Rgba<u8> = Rgba([0, 0, 0, 220]);
+
+#[cfg(target_os = "macos")]
+fn menubar_is_dark() -> bool {
+    // `defaults read -g AppleInterfaceStyle` -> "Dark" when in Dark mode, errors otherwise.
+    // Menubar follows the global appearance, so this is sufficient.
+    std::process::Command::new("defaults")
+        .args(["read", "-g", "AppleInterfaceStyle"])
+        .output()
+        .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim().eq_ignore_ascii_case("Dark"))
+        .unwrap_or(true)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn menubar_is_dark() -> bool {
+    true
+}
 
 /// Generates a dynamic tray icon with segmented progress bars
 pub fn generate_icon(session: f64, weekly: f64) -> Image<'static> {
     let font = &*FONT;
     let mut img = RgbaImage::new(ICON_WIDTH, ICON_HEIGHT);
+    let text_color = if menubar_is_dark() { COLOR_TEXT_DARK_BG } else { COLOR_TEXT_LIGHT_BG };
 
-    draw_line(&mut img, font, LINE1_Y, session, 'S', COLOR_SESSION);
-    draw_line(&mut img, font, LINE2_Y, weekly, 'W', COLOR_WEEKLY);
+    draw_line(&mut img, font, LINE1_Y, session, 'S', COLOR_SESSION, text_color);
+    draw_line(&mut img, font, LINE2_Y, weekly, 'W', COLOR_WEEKLY, text_color);
 
     Image::new_owned(img.into_raw(), ICON_WIDTH, ICON_HEIGHT)
 }
@@ -76,6 +94,7 @@ fn draw_line(
     pct: f64,
     label: char,
     color: Rgba<u8>,
+    text_color: Rgba<u8>,
 ) {
     let clamped = pct.clamp(0.0, 1.0);
     let pct_int = (clamped * 100.0).round() as u32;
@@ -88,10 +107,10 @@ fn draw_line(
     let text_y = (line_y * SCALE) as i32 + TEXT_Y_OFFSET;
 
     // Pseudo-bold: draw twice with 1px horizontal offset
-    draw_text_mut(img, COLOR_TEXT, text_x, text_y, FONT_SIZE, font, &label_str);
-    draw_text_mut(img, COLOR_TEXT, text_x + 1, text_y, FONT_SIZE, font, &label_str);
-    draw_text_mut(img, COLOR_TEXT, value_x, text_y, FONT_SIZE, font, &value_str);
-    draw_text_mut(img, COLOR_TEXT, value_x + 1, text_y, FONT_SIZE, font, &value_str);
+    draw_text_mut(img, text_color, text_x, text_y, FONT_SIZE, font, &label_str);
+    draw_text_mut(img, text_color, text_x + 1, text_y, FONT_SIZE, font, &label_str);
+    draw_text_mut(img, text_color, value_x, text_y, FONT_SIZE, font, &value_str);
+    draw_text_mut(img, text_color, value_x + 1, text_y, FONT_SIZE, font, &value_str);
 
     // Draw segmented bar
     let bar_y = line_y + (LINE_HEIGHT - SEGMENT_HEIGHT) / 2;
