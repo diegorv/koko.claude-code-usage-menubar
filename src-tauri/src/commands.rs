@@ -293,7 +293,7 @@ pub fn start_polling_internal(app: AppHandle, interval_secs: u64) {
 
 /// Starts or restarts auto-refresh with the given interval
 #[tauri::command]
-pub async fn start_auto_refresh(app: AppHandle, interval_secs: u64) -> Result<(), String> {
+pub fn start_auto_refresh(app: AppHandle, interval_secs: u64) -> Result<(), String> {
     start_polling_internal(app, interval_secs);
     Ok(())
 }
@@ -330,7 +330,7 @@ pub async fn hide_popup(app: AppHandle) -> Result<(), String> {
 
 /// Quits the application
 #[tauri::command]
-pub async fn quit_app(app: AppHandle) {
+pub fn quit_app(app: AppHandle) {
     app.exit(0);
 }
 
