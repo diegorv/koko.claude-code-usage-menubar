@@ -1,6 +1,7 @@
 use std::sync::LazyLock;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use crate::parser::{self, UsagePayload};
 use crate::state::{PayloadCache, TokenCache, UsagePoller};
 
 static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
@@ -12,51 +13,7 @@ static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
 });
 
 const MIN_FETCH_INTERVAL_SECS: u64 = 30;
-
-// --- Event payloads ---
-
-#[derive(Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UsagePayload {
-    pub status: String,
-    pub session_percent: u32,
-    pub session_resets_at: Option<String>,
-    pub weekly_percent: u32,
-    pub weekly_resets_at: Option<String>,
-    pub models: Vec<ModelPayload>,
-    pub last_updated_at: u64,
-    pub error_message: Option<String>,
-}
-
-#[derive(Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ModelPayload {
-    pub name: String,
-    pub percent: u32,
-    pub resets_at: Option<String>,
-}
-
-impl UsagePayload {
-    pub(crate) fn error(status: &str, message: &str) -> Self {
-        Self {
-            status: status.to_string(),
-            session_percent: 0,
-            session_resets_at: None,
-            weekly_percent: 0,
-            weekly_resets_at: None,
-            models: vec![],
-            last_updated_at: now_millis(),
-            error_message: Some(message.to_string()),
-        }
-    }
-}
-
-fn now_millis() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-}
+const USAGE_API_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 
 // --- Usage fetching (internal) ---
 
@@ -76,7 +33,7 @@ async fn fetch_usage_payload(token_cache: &TokenCache, payload_cache: &PayloadCa
     };
 
     let response = match HTTP_CLIENT
-        .get("https://api.anthropic.com/api/oauth/usage")
+        .get(USAGE_API_URL)
         .header("Authorization", format!("Bearer {}", token))
         .header("Accept", "application/json")
         .header("Content-Type", "application/json")
@@ -88,85 +45,27 @@ async fn fetch_usage_payload(token_cache: &TokenCache, payload_cache: &PayloadCa
         Err(e) => return UsagePayload::error("error", &format!("Request failed: {}", e)),
     };
 
-    let status_code = response.status();
-    if !status_code.is_success() {
-        if status_code.as_u16() == 401 || status_code.as_u16() == 403 {
-            token_cache.invalidate();
-            return UsagePayload::error(
-                "unauthorized",
-                "Token expired. Run \"claude login\" to re-authenticate.",
-            );
-        }
-        if status_code.as_u16() == 429 {
-            let retry_after = response
-                .headers()
-                .get("retry-after")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.parse::<u64>().ok());
-            let msg = match retry_after {
-                Some(secs) => format!("Rate limited. Try again in {}s.", secs),
-                None => "Rate limited. Please try again later.".to_string(),
-            };
-            return UsagePayload::error("error", &msg);
-        }
-        let body = response.text().await.unwrap_or_default();
-        return UsagePayload::error("error", &format!("HTTP {}: {}", status_code.as_u16(), body));
-    }
-
+    let status = response.status().as_u16();
+    let retry_after = response
+        .headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok());
     let body = match response.text().await {
         Ok(b) => b,
-        Err(e) => {
-            return UsagePayload::error("error", &format!("Failed to read response: {}", e))
-        }
+        Err(e) => return UsagePayload::error("error", &format!("Failed to read response: {}", e)),
     };
 
-    let json: serde_json::Value = match serde_json::from_str(&body) {
-        Ok(v) => v,
-        Err(e) => return UsagePayload::error("error", &format!("Invalid JSON: {}", e)),
-    };
+    let payload = parser::classify(status, retry_after, &body);
 
-    let payload = parse_api_response(&json);
-    payload_cache.store(payload.clone());
+    if payload.status == "unauthorized" {
+        token_cache.invalidate();
+    }
+    if payload.status == "ok" {
+        payload_cache.store(payload.clone());
+    }
+
     payload
-}
-
-fn parse_api_response(json: &serde_json::Value) -> UsagePayload {
-    let clamp = |v: f64| v.max(0.0).min(100.0).round() as u32;
-
-    let mut models = Vec::new();
-    if let Some(util) = json["seven_day_sonnet"]["utilization"].as_f64() {
-        models.push(ModelPayload {
-            name: "Sonnet".to_string(),
-            percent: clamp(util),
-            resets_at: json["seven_day_sonnet"]["resets_at"]
-                .as_str()
-                .map(String::from),
-        });
-    }
-    if let Some(util) = json["seven_day_opus"]["utilization"].as_f64() {
-        models.push(ModelPayload {
-            name: "Opus".to_string(),
-            percent: clamp(util),
-            resets_at: json["seven_day_opus"]["resets_at"]
-                .as_str()
-                .map(String::from),
-        });
-    }
-
-    UsagePayload {
-        status: "ok".to_string(),
-        session_percent: clamp(json["five_hour"]["utilization"].as_f64().unwrap_or(0.0)),
-        session_resets_at: json["five_hour"]["resets_at"]
-            .as_str()
-            .map(String::from),
-        weekly_percent: clamp(json["seven_day"]["utilization"].as_f64().unwrap_or(0.0)),
-        weekly_resets_at: json["seven_day"]["resets_at"]
-            .as_str()
-            .map(String::from),
-        models,
-        last_updated_at: now_millis(),
-        error_message: None,
-    }
 }
 
 // --- Refresh cycle ---
@@ -243,42 +142,4 @@ pub async fn hide_popup(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub fn quit_app(app: AppHandle) {
     app.exit(0);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_parse_api_response_ok() {
-        let json: serde_json::Value = serde_json::from_str(
-            r#"{
-                "five_hour": {"utilization": 45.0, "resets_at": "2024-01-01T00:00:00Z"},
-                "seven_day": {"utilization": 67.0, "resets_at": "2024-01-07T00:00:00Z"},
-                "seven_day_sonnet": {"utilization": 30.0},
-                "seven_day_opus": {"utilization": 80.0}
-            }"#,
-        )
-        .unwrap();
-        let payload = parse_api_response(&json);
-        assert_eq!(payload.status, "ok");
-        assert_eq!(payload.session_percent, 45);
-        assert_eq!(payload.weekly_percent, 67);
-        assert_eq!(payload.models.len(), 2);
-        assert_eq!(payload.models[0].name, "Sonnet");
-        assert_eq!(payload.models[0].percent, 30);
-        assert_eq!(payload.models[1].name, "Opus");
-        assert_eq!(payload.models[1].percent, 80);
-    }
-
-    #[test]
-    fn test_parse_api_response_clamps() {
-        let json: serde_json::Value = serde_json::from_str(
-            r#"{"five_hour": {"utilization": 150.0}, "seven_day": {"utilization": -10.0}}"#,
-        )
-        .unwrap();
-        let payload = parse_api_response(&json);
-        assert_eq!(payload.session_percent, 100);
-        assert_eq!(payload.weekly_percent, 0);
-    }
 }

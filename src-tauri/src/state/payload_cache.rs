@@ -1,7 +1,7 @@
 use std::sync::Mutex;
 use std::time::Instant;
 
-use crate::commands::UsagePayload;
+use crate::parser::UsagePayload;
 
 #[derive(Default)]
 pub struct PayloadCache {

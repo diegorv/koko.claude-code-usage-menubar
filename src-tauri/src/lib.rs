@@ -1,4 +1,5 @@
 mod commands;
+mod parser;
 mod state;
 pub(crate) mod tray_icon;
 
