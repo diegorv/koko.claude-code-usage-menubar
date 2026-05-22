@@ -60,3 +60,17 @@ The Anthropic `/api/oauth/usage` endpoint is a plain GET, not inference. 2-minut
 - `pnpm tauri dev` — runs Vite + cargo. Changes to Rust require a restart; Svelte hot-reloads.
 - Frontend console is via Safari → Develop → (app name) → popup. Capabilities must allow devtools on that window label.
 - `cargo check` from `src-tauri/` for quick Rust validation without rebuilding the app.
+
+## Agent skills
+
+### Issue tracker
+
+Local markdown under `.scratch/<feature>/`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Canonical defaults (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context (`CONTEXT.md` + `docs/adr/` at repo root). See `docs/agents/domain.md`.
