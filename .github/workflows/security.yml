@@ -1,0 +1,71 @@
+name: Security
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+  workflow_dispatch:
+  # Reusable: invoked by `.github/workflows/release.yml` as an
+  # informational gate alongside ci on tag push.
+  workflow_call:
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pnpm-audit:
+    name: pnpm Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup environment
+        uses: ./.github/actions/setup
+        with:
+          rust: "false"
+
+      - name: Audit dependencies
+        # `--audit-level=moderate` matches the dependency-review threshold
+        # below: a moderate-or-higher advisory blocks the PR.
+        run: pnpm audit --audit-level=moderate
+
+  cargo-audit:
+    name: Cargo Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Job-level permissions REPLACE workflow-level (they're not merged),
+    # so the `contents: read` baseline has to be redeclared alongside
+    # the `checks: write` escalation required by `rustsec/audit-check`.
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Audit dependencies
+        # Pinned by commit SHA, not tag — same supply-chain reasoning
+        # as the other third-party actions. Dependabot bumps via the
+        # trailing `# v2.0.0` tag comment.
+        uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          working-directory: src-tauri
+
+  dependency-review:
+    name: Dependency Review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Review dependencies
+        uses: actions/dependency-review-action@v5
+        with:
+          fail-on-severity: moderate

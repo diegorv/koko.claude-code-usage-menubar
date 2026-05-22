@@ -1,0 +1,185 @@
+name: CI
+
+permissions:
+  contents: read
+
+# Triggers:
+#   - pull_request: gate every PR against main before merge.
+#   - workflow_dispatch: manual revalidation lever.
+#   - workflow_call: invoked by release.yml on tag push (with force_all:true)
+#     so the tagged SHA is revalidated end-to-end before the macOS build.
+#
+# `push: main` is intentionally NOT a trigger. PRs already gate every
+# accepted commit, and release tags reuse this workflow via workflow_call.
+# A standalone push trigger would duplicate that work in the same
+# concurrency group and produce confusing cancelled runs.
+on:
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      force_all:
+        description: "Bypass the paths filter and run frontend + rust unconditionally"
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      # When `force_all` is true (release.yml on a tag push), short-circuit
+      # the paths-filter step entirely and pretend everything changed.
+      frontend: ${{ inputs.force_all == true && 'true' || steps.filter.outputs.frontend }}
+      rust: ${{ inputs.force_all == true && 'true' || steps.filter.outputs.rust }}
+    steps:
+      - uses: actions/checkout@v6
+
+      # Pinned by commit SHA, not tag, so a compromised maintainer
+      # account can't move the version tag to malicious code and have
+      # us pick it up silently. Dependabot still updates this entry
+      # (it reads the trailing `# v4.0.1` tag comment).
+      - if: ${{ inputs.force_all != true }}
+        uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
+        id: filter
+        with:
+          filters: |
+            frontend:
+              - "src/**"
+              - "static/**"
+              - "pnpm-lock.yaml"
+              - "package.json"
+              - "tsconfig.json"
+              - "svelte.config.*"
+              - "vite.config.*"
+              # CI infrastructure changes (composite actions, workflow
+              # definitions) can break the frontend pipeline silently —
+              # e.g. a setup-action change that drops pnpm caching, or a
+              # workflow tweak that mis-orders the install step.
+              - ".github/actions/**"
+              - ".github/workflows/**"
+            rust:
+              - "src-tauri/**"
+              - ".github/actions/**"
+              - ".github/workflows/**"
+
+  frontend:
+    name: Frontend (typecheck + tests + build)
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup environment
+        uses: ./.github/actions/setup
+        with:
+          rust: "false"
+
+      # `pnpm check` runs `svelte-kit sync` first, so it already produces the
+      # generated files vitest needs — no separate sync step required.
+      - name: Run type check
+        run: pnpm check
+
+      - name: Run unit tests
+        run: pnpm vitest run
+
+      # Verifies the SvelteKit / Vite production bundle actually compiles.
+      # `pnpm check` covers types and `pnpm vitest run` covers logic, but
+      # neither catches runtime-only bundling failures (SSR-incompatible
+      # imports, dynamic import paths that don't resolve, type-only
+      # re-exports that become runtime errors, asset references missing
+      # at build time). Without this step, those regressions only surface
+      # inside `tauri-action` during release — late and expensive.
+      - name: Build frontend bundle
+        run: pnpm build
+
+  rust:
+    name: Rust (cargo test)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      # Tauri 2 pulls in `glib-sys`, `gtk-sys`, `webkit2gtk-sys`, etc. via
+      # the `tauri` crate's Linux backend. Even `cargo test` (which never
+      # links a final binary) still runs each `-sys` crate's build script,
+      # and those scripts shell out to `pkg-config` and abort the build
+      # when the system libraries are absent. The ubuntu-latest image
+      # ships none of them.
+      #
+      # Package list mirrors the Tauri 2 Linux prerequisites documented
+      # at https://v2.tauri.app/start/prerequisites/#linux for
+      # Debian/Ubuntu 24.04.
+      - name: Install Tauri Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libssl-dev \
+            libsoup-3.0-dev \
+            build-essential \
+            pkg-config
+
+      - name: Setup environment
+        uses: ./.github/actions/setup
+        with:
+          # On a Linux runner we only need the host toolchain — passing
+          # an empty value skips the cross-target install that rustup
+          # would otherwise do unnecessarily.
+          rust-targets: ""
+
+      - name: Run tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+  # Aggregate gate used as the single required status check for branch
+  # protection. `frontend` and `rust` are skipped when their paths
+  # filter says nothing relevant changed, which makes them unusable as
+  # required checks directly. This sentinel passes when every dependency
+  # either succeeded or was deliberately skipped, and fails on any real
+  # failure or cancellation.
+  ci-success:
+    name: CI success
+    needs: [changes, frontend, rust]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Aggregate gate results
+        run: |
+          set -euo pipefail
+          changes="${{ needs.changes.result }}"
+          frontend="${{ needs.frontend.result }}"
+          rust="${{ needs.rust.result }}"
+          echo "changes=$changes frontend=$frontend rust=$rust"
+          if [ "$changes" != "success" ]; then
+            echo "::error::changes job did not succeed (result=$changes)"
+            exit 1
+          fi
+          for name in frontend rust; do
+            case "$name" in
+              frontend) result="$frontend" ;;
+              rust) result="$rust" ;;
+            esac
+            if [ "$result" != "success" ] && [ "$result" != "skipped" ]; then
+              echo "::error::$name job did not pass (result=$result)"
+              exit 1
+            fi
+          done
+          echo "All gates passed."

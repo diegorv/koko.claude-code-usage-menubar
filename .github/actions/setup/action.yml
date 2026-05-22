@@ -1,0 +1,139 @@
+name: "Setup Environment"
+description: "Setup pnpm, Node.js, Rust, sccache, and dependency caching"
+
+inputs:
+  rust:
+    description: "Install Rust toolchain"
+    required: false
+    default: "true"
+  rust-targets:
+    description: "Rust targets to install"
+    required: false
+    default: "aarch64-apple-darwin"
+  rust-cache-key:
+    description: >-
+      Optional `shared-key` passed to Swatinem/rust-cache. When set, all
+      jobs that pass the same value share a single cache entry (instead
+      of each job getting its own `v0-rust-<job_id>-...` slot). Use this
+      for jobs that run the same cargo invocation (e.g. `cargo build
+      --release --target aarch64-apple-darwin` in nightly.yml and
+      release.yml) so a successful build in one workflow primes the
+      cache for the other. Leave empty for jobs whose cargo invocation
+      produces different artifacts (e.g. ci.yml's `cargo test`
+      debug+host build), so they keep their own per-job cache and
+      don't clobber each other.
+    required: false
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    # Third-party actions (pnpm/action-setup, Swatinem/rust-cache) are
+    # pinned by commit SHA to harden against a maintainer-account
+    # compromise that could ship a malicious tag move. Dependabot still
+    # updates each entry via the trailing `# vX` tag comment.
+    #
+    # `actions/*` (setup-node) is left on a version tag — those are
+    # GitHub-published and considered part of the trusted base.
+    #
+    # `dtolnay/rust-toolchain@stable` is intentionally NOT pinned by
+    # SHA: `stable` is a branch reference that tracks the rolling
+    # rustc stable channel, and pinning by SHA would freeze both the
+    # action code AND the channel (defeating the whole point of
+    # `stable`). The action is small and well-audited.
+    # The pinned pnpm version comes from `package.json#packageManager`.
+    # action-setup honors that field, so the action's own major version
+    # is independent of the pnpm version it installs.
+    - name: Setup pnpm
+      uses: pnpm/action-setup@ab5d408e9d066b8ffe7503f789d50fd7e35c0c92 # v6.0.7
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v6
+      with:
+        node-version: "22"
+        cache: "pnpm"
+
+    - name: Install frontend dependencies
+      shell: bash
+      run: pnpm install --frozen-lockfile
+
+    - name: Setup Rust
+      if: inputs.rust == 'true'
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ inputs.rust-targets }}
+
+    # macos-15-arm64 image (image version 20260511.0048+) ships a Homebrew
+    # rustup whose `cargo`/`rustc`/`rustup-init` are all hardlinks to a
+    # single multi-call binary that's supposed to dispatch on argv[0] —
+    # but that dispatch is broken on this image. Running `cargo metadata`
+    # via any `~/.cargo/bin/cargo` shim (Homebrew's or the one dtolnay
+    # installs) routes to `rustup-init` and dies with:
+    #
+    #     error: error: unexpected argument 'metadata' found
+    #     Usage: rustup-init[EXE] [OPTIONS]
+    #
+    # Bypass the multi-call shim entirely by prepending the toolchain's
+    # real binary directory (`~/.rustup/toolchains/<host>/bin/`), which
+    # holds standalone `cargo`/`rustc` executables that do NOT depend on
+    # argv[0] dispatch. `rustup which cargo` returns the absolute path
+    # to the active toolchain's cargo, so the parent dir is what we need
+    # on PATH. GITHUB_PATH appends become PATH prepends for subsequent
+    # steps, so the real cargo wins every lookup — including subprocesses
+    # spawned by `tauri-action`, `pnpm tauri build`, and any third-party
+    # action that shells out to `cargo`.
+    - name: Pin cargo to toolchain binary (bypass rustup argv[0] dispatch)
+      if: inputs.rust == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        REAL_CARGO=$("$HOME/.cargo/bin/rustup" which cargo)
+        REAL_DIR=$(dirname "$REAL_CARGO")
+        echo "Real cargo: $REAL_CARGO"
+        echo "$REAL_DIR" >> "$GITHUB_PATH"
+        if ! "$REAL_CARGO" --version >/dev/null 2>&1; then
+          echo "::error::toolchain cargo at $REAL_CARGO is not executable"
+          exit 1
+        fi
+        "$REAL_CARGO" --version
+
+    # sccache via the GitHub Actions Cache backend. Complementary to
+    # Swatinem/rust-cache below: rust-cache stores the `target/` directory
+    # (artifacts), sccache stores per-rustc-invocation results (so a
+    # single crate's recompile after an unrelated change still hits cache).
+    # Pinned by commit SHA per the same security pattern as the other
+    # third-party actions. Dependabot bumps via the trailing version tag.
+    - name: Setup sccache
+      if: inputs.rust == 'true'
+      uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+
+    # sccache-action installs the binary but does NOT configure the GHA
+    # backend automatically. Without `SCCACHE_GHA_ENABLED`, sccache falls
+    # back to a local-disk cache that the ephemeral runner discards at
+    # the end of every job — producing a 0% cache hit rate across runs.
+    # `RUSTC_WRAPPER=sccache` redirects rustc through sccache for every
+    # cargo invocation in subsequent steps.
+    - name: Configure sccache GHA backend
+      if: inputs.rust == 'true'
+      shell: bash
+      run: |
+        echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+        echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+
+    # `cache-on-failure: true` is intentionally NOT set: partial caches
+    # from cancelled runs would persist, and subsequent restores would
+    # report `full match: true` against incomplete content, forcing cargo
+    # to recompile the missing deps anyway. Better to only save complete
+    # caches (default), at the cost of skipping save on a job that failed
+    # AFTER doing meaningful compile work.
+    #
+    # `shared-key` (driven by `rust-cache-key` input) lets the release and
+    # nightly workflows share a single cache slot when they run the same
+    # cargo invocation. Without it, each job's cache lives in its own
+    # namespace and neither workflow primes the cache for the other.
+    - name: Cache Rust dependencies and build artifacts
+      if: inputs.rust == 'true'
+      uses: Swatinem/rust-cache@23869a5bd66c73db3c0ac40331f3206eb23791dc # v2.9.1
+      with:
+        workspaces: "src-tauri -> target"
+        shared-key: ${{ inputs.rust-cache-key }}

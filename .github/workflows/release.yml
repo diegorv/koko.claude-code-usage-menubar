@@ -1,0 +1,175 @@
+name: Release
+
+# Triggers on any semver tag push (`X.Y.Z` or `X.Y.Z-suffix`). The
+# trigger pattern is intentionally permissive; the actual channel
+# allowlist lives in the `validate` job below, where it can be
+# updated without touching the workflow trigger.
+on:
+  push:
+    tags:
+      - "*.*.*"
+      - "*.*.*-*"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Cheap pre-flight gate. Runs on ubuntu in seconds and fails fast if the
+  # tag was pushed from a branch that isn't on main, before we spin up the
+  # macOS runner or revalidate CI.
+  validate:
+    name: Validate tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Validate tag matches an accepted release channel
+        run: |
+          set -euo pipefail
+          TAG="${{ github.ref_name }}"
+          channel_re='^[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc\.[0-9]+))?$'
+          if ! [[ "$TAG" =~ $channel_re ]]; then
+            echo "::error::Tag '$TAG' does not match an accepted release channel pattern."
+            echo "::error::Accepted: X.Y.Z (stable), X.Y.Z-alpha, X.Y.Z-beta, X.Y.Z-rc.N"
+            exit 1
+          fi
+          echo "Tag '$TAG' matches accepted channel pattern."
+
+      - name: Validate tag is on main branch
+        run: |
+          set -euo pipefail
+          TAG_COMMIT=$(git rev-parse HEAD)
+          if ! git merge-base --is-ancestor "$TAG_COMMIT" origin/main; then
+            echo "::error::Release tag ${{ github.ref_name }} is not on the main branch. Aborting."
+            exit 1
+          fi
+          echo "Validated: ${{ github.ref_name }} is on main branch"
+
+  # Re-run the full CI suite on the exact tagged SHA via workflow_call.
+  # `force_all: true` bypasses the paths filter so a version-bump-only
+  # commit (which doesn't touch frontend or rust source paths) still
+  # runs both suites against the exact tagged SHA.
+  ci:
+    name: CI
+    needs: validate
+    uses: ./.github/workflows/ci.yml
+    with:
+      force_all: true
+
+  # Security audits on the tagged SHA. Runs in parallel with ci.
+  # NOT in `build-macos.needs` on purpose: a security finding (e.g.
+  # a transitive advisory published between the PR merge and the tag
+  # push) is informational at release time, not a hard block. Promote
+  # this to a blocker by adding `security` back to `build-macos.needs`
+  # if the policy changes.
+  security:
+    name: Security
+    needs: validate
+    uses: ./.github/workflows/security.yml
+
+  build-macos:
+    name: Build macOS
+    needs: [ci]
+    runs-on: macos-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup environment
+        uses: ./.github/actions/setup
+        with:
+          rust-cache-key: macos-release-aarch64
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          set -euo pipefail
+          TAG="${{ github.ref_name }}"
+          PREV_TAG=$(git tag --list '[0-9]*.[0-9]*.[0-9]*' --sort=-version:refname | grep -v "^${TAG}$" | head -n 1)
+          if [ -z "$PREV_TAG" ]; then
+            RANGE="$TAG"
+          else
+            RANGE="${PREV_TAG}..${TAG}"
+          fi
+          # `grep -v` exits 1 when no lines match, which under `set -e`
+          # would kill the step for a release whose only commit is the
+          # version bump. Append `|| true` so an empty changelog is
+          # treated as a valid (if uninteresting) outcome.
+          COMMITS=$(git log --pretty=format:"- %s (%h)" "$RANGE" | grep -v "^- chore: bump version" || true)
+          {
+            echo "commits<<CHANGELOG_EOF"
+            echo "$COMMITS"
+            echo "CHANGELOG_EOF"
+            echo "prev_tag=${PREV_TAG:-}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build Tauri app
+        id: tauri
+        # Pinned by commit SHA, not tag — this action handles Apple
+        # signing certs, notarization credentials, and the Tauri
+        # auto-update signing key. A compromised maintainer account
+        # publishing a malicious tag could exfiltrate every secret in
+        # the env block below. Dependabot still bumps via the trailing
+        # `# v0.6.2` tag comment.
+        uses: tauri-apps/tauri-action@1ddc7b49b13c3038297360482fcb3e058764d7c9 # v0.6.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_OPTIONS: "--max-old-space-size=4096"
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: ${{ github.ref_name }}
+          args: '--target aarch64-apple-darwin'
+          releaseBody: |
+            ## What's Changed
+
+            ${{ steps.changelog.outputs.commits }}
+
+            ${{ steps.changelog.outputs.prev_tag && format('**Full diff:** [{0}...{1}](https://github.com/{2}/compare/{0}...{1})', steps.changelog.outputs.prev_tag, github.ref_name, github.repository) || '' }}
+
+            ## Verify download integrity
+
+            After downloading, verify the SHA-256 checksum against the `checksums-sha256.txt` file:
+
+            ```bash
+            shasum -a 256 <downloaded-file>
+            ```
+
+            Compare the output with the corresponding entry in `checksums-sha256.txt`.
+          releaseDraft: false
+          prerelease: false
+
+      - name: Generate SHA-256 checksums
+        run: |
+          set -euo pipefail
+          cd src-tauri/target/aarch64-apple-darwin/release/bundle
+          CHECKSUM_FILE="checksums-sha256.txt"
+          find . -type f \( -name "*.dmg" -o -name "*.app.tar.gz" -o -name "*.app.tar.gz.sig" \) | sort | sed 's|^\./||' | while read -r file; do
+            shasum -a 256 "$file" >> "$CHECKSUM_FILE"
+          done
+          echo "--- Checksums ---"
+          cat "$CHECKSUM_FILE"
+
+      - name: Upload checksums to release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release upload "${{ github.ref_name }}" \
+            src-tauri/target/aarch64-apple-darwin/release/bundle/checksums-sha256.txt \
+            --clobber
