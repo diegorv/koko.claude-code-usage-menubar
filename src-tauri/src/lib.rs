@@ -1,4 +1,5 @@
 mod commands;
+mod state;
 pub(crate) mod tray_icon;
 
 use tauri::{
@@ -14,6 +15,9 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::default().build())
+        .manage(state::TokenCache::new())
+        .manage(state::PayloadCache::new())
+        .manage(state::UsagePoller::new())
         .invoke_handler(tauri::generate_handler![
             commands::start_auto_refresh,
             commands::trigger_refresh,
@@ -57,7 +61,7 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let interval_secs = read_saved_interval(app).unwrap_or(120);
 
     // Start native polling timer (immune to WebView throttling)
-    commands::start_polling_internal(handle.clone(), interval_secs);
+    app.state::<state::UsagePoller>().restart(handle.clone(), interval_secs);
 
     Ok(())
 }

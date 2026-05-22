@@ -1,6 +1,7 @@
-use std::sync::{LazyLock, Mutex};
-use std::time::Instant;
-use tauri::{AppHandle, Emitter, Manager};
+use std::sync::LazyLock;
+use tauri::{AppHandle, Emitter, Manager, State};
+
+use crate::state::{PayloadCache, TokenCache, UsagePoller};
 
 static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     reqwest::Client::builder()
@@ -9,17 +10,6 @@ static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
         .build()
         .expect("failed to build HTTP client")
 });
-
-static TOKEN_CACHE: LazyLock<Mutex<Option<(String, Instant)>>> =
-    LazyLock::new(|| Mutex::new(None));
-
-const TOKEN_CACHE_TTL_SECS: u64 = 86400; // 24 hours — only re-reads keychain on auth errors
-
-static POLLING_HANDLE: LazyLock<Mutex<Option<tauri::async_runtime::JoinHandle<()>>>> =
-    LazyLock::new(|| Mutex::new(None));
-
-static LAST_FETCH: LazyLock<Mutex<Option<Instant>>> = LazyLock::new(|| Mutex::new(None));
-static LAST_PAYLOAD: LazyLock<Mutex<Option<UsagePayload>>> = LazyLock::new(|| Mutex::new(None));
 
 const MIN_FETCH_INTERVAL_SECS: u64 = 30;
 
@@ -47,7 +37,7 @@ pub struct ModelPayload {
 }
 
 impl UsagePayload {
-    fn error(status: &str, message: &str) -> Self {
+    pub(crate) fn error(status: &str, message: &str) -> Self {
         Self {
             status: status.to_string(),
             session_percent: 0,
@@ -68,65 +58,12 @@ fn now_millis() -> u64 {
         .as_millis() as u64
 }
 
-// --- Token management ---
-
-fn get_cached_token() -> Result<String, String> {
-    {
-        let cache = TOKEN_CACHE.lock().map_err(|e| format!("Lock error: {}", e))?;
-        if let Some((ref token, ref cached_at)) = *cache {
-            if cached_at.elapsed().as_secs() < TOKEN_CACHE_TTL_SECS {
-                return Ok(token.clone());
-            }
-        }
-    }
-
-    let token = read_token_from_keychain()?;
-
-    {
-        let mut cache = TOKEN_CACHE.lock().map_err(|e| format!("Lock error: {}", e))?;
-        *cache = Some((token.clone(), Instant::now()));
-    }
-
-    Ok(token)
-}
-
-fn invalidate_cache() {
-    if let Ok(mut cache) = TOKEN_CACHE.lock() {
-        *cache = None;
-    }
-}
-
-fn read_token_from_keychain() -> Result<String, String> {
-    #[cfg(target_os = "macos")]
-    {
-        use security_framework::passwords::get_generic_password;
-
-        let username = std::env::var("USER")
-            .map_err(|_| "Could not get username".to_string())?;
-
-        let password_data = get_generic_password("Claude Code-credentials", &username)
-            .map_err(|e| format!("Failed to read keychain: {}", e))?;
-
-        let json_str = String::from_utf8(password_data.to_vec())
-            .map_err(|e| format!("Invalid UTF-8 in keychain: {}", e))?;
-
-        parse_keychain_json(&json_str)
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        Err("Keychain access only available on macOS".to_string())
-    }
-}
-
 // --- Usage fetching (internal) ---
 
-async fn fetch_usage_payload() -> UsagePayload {
-    if let Ok(mut last) = LAST_FETCH.lock() {
-        *last = Some(Instant::now());
-    }
+async fn fetch_usage_payload(token_cache: &TokenCache, payload_cache: &PayloadCache) -> UsagePayload {
+    payload_cache.mark_fetch_start();
 
-    let token = match get_cached_token() {
+    let token = match token_cache.get_or_read() {
         Ok(t) => t,
         Err(e) => {
             let status = if e.contains("Failed to read keychain") || e.contains("No accessToken") {
@@ -154,7 +91,7 @@ async fn fetch_usage_payload() -> UsagePayload {
     let status_code = response.status();
     if !status_code.is_success() {
         if status_code.as_u16() == 401 || status_code.as_u16() == 403 {
-            invalidate_cache();
+            token_cache.invalidate();
             return UsagePayload::error(
                 "unauthorized",
                 "Token expired. Run \"claude login\" to re-authenticate.",
@@ -189,12 +126,7 @@ async fn fetch_usage_payload() -> UsagePayload {
     };
 
     let payload = parse_api_response(&json);
-
-    // Cache successful payload for use when throttled
-    if let Ok(mut cached) = LAST_PAYLOAD.lock() {
-        *cached = Some(payload.clone());
-    }
-
+    payload_cache.store(payload.clone());
     payload
 }
 
@@ -252,40 +184,19 @@ fn update_tray_icon(app: &AppHandle, payload: &UsagePayload) {
     }
 }
 
-async fn do_refresh_cycle(app: &AppHandle) {
-    let payload = fetch_usage_payload().await;
+pub async fn do_refresh_cycle(app: &AppHandle) {
+    let token_cache = app.state::<TokenCache>();
+    let payload_cache = app.state::<PayloadCache>();
+    let payload = fetch_usage_payload(&token_cache, &payload_cache).await;
     update_tray_icon(app, &payload);
     let _ = app.emit("usage_updated", &payload);
 }
 
 /// Emits the last cached payload to the frontend (used when popup is shown).
 pub fn emit_cached_payload(app: &AppHandle) {
-    if let Ok(cached) = LAST_PAYLOAD.lock() {
-        if let Some(ref payload) = *cached {
-            let _ = app.emit("usage_updated", payload);
-        }
-    }
-}
-
-// --- Polling management ---
-
-/// Starts (or restarts) the native polling timer. Called from setup and from frontend.
-pub fn start_polling_internal(app: AppHandle, interval_secs: u64) {
-    if let Ok(mut handle) = POLLING_HANDLE.lock() {
-        if let Some(h) = handle.take() {
-            h.abort();
-        }
-
-        let jh = tauri::async_runtime::spawn(async move {
-            do_refresh_cycle(&app).await;
-
-            loop {
-                tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
-                do_refresh_cycle(&app).await;
-            }
-        });
-
-        *handle = Some(jh);
+    let payload_cache = app.state::<PayloadCache>();
+    if let Some(payload) = payload_cache.get() {
+        let _ = app.emit("usage_updated", &payload);
     }
 }
 
@@ -293,28 +204,28 @@ pub fn start_polling_internal(app: AppHandle, interval_secs: u64) {
 
 /// Starts or restarts auto-refresh with the given interval
 #[tauri::command]
-pub fn start_auto_refresh(app: AppHandle, interval_secs: u64) -> Result<(), String> {
-    start_polling_internal(app, interval_secs);
+pub fn start_auto_refresh(
+    app: AppHandle,
+    poller: State<'_, UsagePoller>,
+    interval_secs: u64,
+) -> Result<(), String> {
+    poller.restart(app, interval_secs);
     Ok(())
 }
 
 /// Triggers a single immediate refresh and returns the data to the caller.
 /// Skips the API call if data was fetched less than MIN_FETCH_INTERVAL_SECS ago.
 #[tauri::command]
-pub async fn trigger_refresh(app: AppHandle) -> Result<UsagePayload, String> {
-    if let Ok(last) = LAST_FETCH.lock() {
-        if let Some(t) = *last {
-            if t.elapsed().as_secs() < MIN_FETCH_INTERVAL_SECS {
-                if let Ok(cached) = LAST_PAYLOAD.lock() {
-                    if let Some(ref payload) = *cached {
-                        return Ok(payload.clone());
-                    }
-                }
-            }
-        }
+pub async fn trigger_refresh(
+    app: AppHandle,
+    token_cache: State<'_, TokenCache>,
+    payload_cache: State<'_, PayloadCache>,
+) -> Result<UsagePayload, String> {
+    if let Some(cached) = payload_cache.cached_if_fresh(MIN_FETCH_INTERVAL_SECS) {
+        return Ok(cached);
     }
 
-    let payload = fetch_usage_payload().await;
+    let payload = fetch_usage_payload(&token_cache, &payload_cache).await;
     update_tray_icon(&app, &payload);
     Ok(payload)
 }
@@ -334,50 +245,9 @@ pub fn quit_app(app: AppHandle) {
     app.exit(0);
 }
 
-/// Extracts access token from keychain JSON
-pub fn parse_keychain_json(json_str: &str) -> Result<String, String> {
-    let json: serde_json::Value =
-        serde_json::from_str(json_str).map_err(|e| format!("Invalid JSON: {}", e))?;
-
-    json.get("claudeAiOauth")
-        .and_then(|oauth| oauth.get("accessToken"))
-        .and_then(|token| token.as_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| "No accessToken found in keychain data".to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_parse_keychain_json_valid() {
-        let json = r#"{"claudeAiOauth": {"accessToken": "sk-ant-test123"}}"#;
-        let result = parse_keychain_json(json);
-        assert_eq!(result.unwrap(), "sk-ant-test123");
-    }
-
-    #[test]
-    fn test_parse_keychain_json_missing_oauth() {
-        let json = r#"{"otherKey": "value"}"#;
-        let result = parse_keychain_json(json);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("No accessToken"));
-    }
-
-    #[test]
-    fn test_parse_keychain_json_missing_token() {
-        let json = r#"{"claudeAiOauth": {"refreshToken": "rt-123"}}"#;
-        let result = parse_keychain_json(json);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_parse_keychain_json_invalid_json() {
-        let result = parse_keychain_json("not json");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Invalid JSON"));
-    }
 
     #[test]
     fn test_parse_api_response_ok() {
