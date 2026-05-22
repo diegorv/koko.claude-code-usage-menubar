@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ─── Config ───────────────────────────────────────────────────────────
+SUFFIX="-alpha"
+
+# ─── Helpers ──────────────────────────────────────────────────────────
+usage() {
+  echo "Usage: $0 [patch|minor|major]"
+  echo ""
+  echo "Bump types:"
+  echo "  patch  (default)  Small fixes and adjustments"
+  echo "                    0.3.0 → 0.3.1 → 0.3.2 → 0.3.3 ..."
+  echo ""
+  echo "  minor             New features (resets patch to 0)"
+  echo "                    0.3.2 → 0.4.0 → 0.5.0 → 0.6.0 ..."
+  echo ""
+  echo "  major             Breaking changes (resets minor and patch to 0)"
+  echo "                    0.6.0 → 1.0.0 → 2.0.0 → 3.0.0 ..."
+  echo ""
+  echo "The '${SUFFIX}' suffix is appended automatically."
+  echo "All tags are annotated with a changelog of commits since the last tag."
+  echo ""
+  echo "Examples:"
+  echo "  $0              # 0.3.0-alpha → 0.3.1-alpha"
+  echo "  $0 minor        # 0.3.1-alpha → 0.4.0-alpha"
+  echo "  $0 major        # 0.4.0-alpha → 1.0.0-alpha"
+  exit 1
+}
+
+# ─── Parse bump type ─────────────────────────────────────────────────
+BUMP="${1:-patch}"
+case "$BUMP" in
+  patch|minor|major) ;;
+  -h|--help) usage ;;
+  *) echo "Error: unknown bump type '$BUMP'"; usage ;;
+esac
+
+# ─── Get latest tag ──────────────────────────────────────────────────
+LATEST_TAG=$(git tag --sort=-v:refname | grep -v '^nightly$' | head -1)
+
+if [ -z "$LATEST_TAG" ]; then
+  echo "No tags found. Starting from 0.1.0${SUFFIX}"
+  LATEST_TAG="0.0.0${SUFFIX}"
+fi
+
+echo "Latest tag: $LATEST_TAG"
+
+# ─── Strip suffix and split version ──────────────────────────────────
+VERSION=$(echo "$LATEST_TAG" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')
+IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+
+# ─── Bump version ────────────────────────────────────────────────────
+case "$BUMP" in
+  patch) PATCH=$((PATCH + 1)) ;;
+  minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+  major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+esac
+
+NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}${SUFFIX}"
+
+# ─── Build changelog from commits since last tag ─────────────────────
+echo ""
+echo "──────────────────────────────────────"
+echo "  $LATEST_TAG → $NEW_VERSION ($BUMP)"
+echo "──────────────────────────────────────"
+echo ""
+
+if [ "$LATEST_TAG" = "0.0.0${SUFFIX}" ]; then
+  COMMITS=$(git log --oneline --no-decorate)
+else
+  COMMITS=$(git log "${LATEST_TAG}..HEAD" --oneline --no-decorate)
+fi
+
+if [ -z "$COMMITS" ]; then
+  echo "No new commits since $LATEST_TAG. Aborting."
+  exit 1
+fi
+
+# ─── Format changelog ────────────────────────────────────────────────
+CHANGELOG=$(echo "$COMMITS" | while IFS= read -r line; do
+  # Strip the short hash, keep only the message
+  MSG="${line#* }"
+  echo "- $MSG"
+done)
+
+TAG_BODY="Release ${NEW_VERSION}
+
+Changes since ${LATEST_TAG}:
+
+${CHANGELOG}
+"
+
+echo "$TAG_BODY"
+echo "──────────────────────────────────────"
+echo ""
+
+# ─── Confirm ─────────────────────────────────────────────────────────
+read -rp "Create tag $NEW_VERSION? [y/N] " CONFIRM
+if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
+  echo "Aborted."
+  exit 0
+fi
+
+# ─── Bump version in project files ───────────────────────────────────
+echo "Updating version in project files..."
+
+sed -i '' "s/\"version\": \"[^\"]*\"/\"version\": \"${NEW_VERSION}\"/" package.json
+sed -i '' "s/^version = \"[^\"]*\"/version = \"${NEW_VERSION}\"/" src-tauri/Cargo.toml
+sed -i '' "s/\"version\": \"[^\"]*\"/\"version\": \"${NEW_VERSION}\"/" src-tauri/tauri.conf.json
+
+sed -i '' '/^name = "claude-code-usage-menubar"$/{n; s/^version = "[^"]*"/version = "'"${NEW_VERSION}"'"/;}' src-tauri/Cargo.lock
+
+git add package.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
+git commit -m "chore: bump version to ${NEW_VERSION}"
+
+echo "Version bumped and committed."
+echo ""
+
+# ─── Create annotated tag ────────────────────────────────────────────
+git tag -a "$NEW_VERSION" -m "$TAG_BODY"
+
+echo ""
+echo "Tag $NEW_VERSION created. Pushing to origin..."
+echo ""
+
+git push origin main
+git push origin "$NEW_VERSION"
+
+echo ""
+echo "Tag $NEW_VERSION pushed to GitHub."
+
+# ─── Prune old tags (keep last 4, never touch 'nightly') ─────────────
+KEEP_COUNT=4
+echo ""
+echo "Pruning old tags (keeping last ${KEEP_COUNT})..."
+
+git fetch --tags --prune --prune-tags origin >/dev/null 2>&1 || true
+
+ALL_TAGS=$(git tag -l --sort=-v:refname | grep -v '^nightly$' || true)
+OLD_TAGS=$(echo "$ALL_TAGS" | tail -n +$((KEEP_COUNT + 1)))
+
+if [ -z "$OLD_TAGS" ]; then
+  echo "Nothing to prune."
+else
+  HAVE_GH=0
+  command -v gh >/dev/null 2>&1 && HAVE_GH=1
+  echo "$OLD_TAGS" | while IFS= read -r tag; do
+    [ -z "$tag" ] && continue
+    echo "  deleting $tag"
+    if [ "$HAVE_GH" = "1" ]; then
+      gh release delete "$tag" --cleanup-tag -y >/dev/null 2>&1 || true
+    fi
+    git push origin --delete "$tag" >/dev/null 2>&1 || true
+    git tag -d "$tag" >/dev/null 2>&1 || true
+  done
+  echo "Pruned."
+fi
