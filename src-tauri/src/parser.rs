@@ -184,4 +184,26 @@ mod tests {
         assert!(msg.contains("HTTP 503"));
         assert!(msg.contains("upstream down"));
     }
+
+    #[test]
+    fn classify_500_includes_body() {
+        let payload = classify(500, None, "boom");
+        let msg = payload.error_message.unwrap();
+        assert!(msg.contains("HTTP 500"));
+        assert!(msg.contains("boom"));
+    }
+
+    #[test]
+    fn classify_200_with_invalid_json_returns_error() {
+        let payload = classify(200, None, "not json");
+        assert_eq!(payload.status, "error");
+        assert!(payload.error_message.unwrap().contains("Invalid JSON"));
+    }
+
+    #[test]
+    fn classify_200_with_empty_body_returns_error() {
+        let payload = classify(200, None, "");
+        assert_eq!(payload.status, "error");
+        assert!(payload.error_message.unwrap().contains("Invalid JSON"));
+    }
 }
