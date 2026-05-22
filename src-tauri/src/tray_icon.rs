@@ -2,7 +2,8 @@ use ab_glyph::FontArc;
 use image::{Rgba, RgbaImage};
 use imageproc::drawing::{draw_filled_rect_mut, draw_text_mut};
 use imageproc::rect::Rect;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Mutex};
+use std::time::Instant;
 use tauri::image::Image;
 
 static FONT: LazyLock<FontArc> = LazyLock::new(|| {
@@ -75,11 +76,32 @@ fn menubar_is_dark() -> bool {
     true
 }
 
+// Cache the appearance lookup so we don't fork+exec `defaults` on every redraw.
+// 30s TTL — appearance toggles are rare; one cycle of staleness is fine.
+const DARK_MODE_TTL_SECS: u64 = 30;
+static DARK_MODE_CACHE: LazyLock<Mutex<Option<(bool, Instant)>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+fn menubar_is_dark_cached() -> bool {
+    if let Ok(cache) = DARK_MODE_CACHE.lock() {
+        if let Some((value, ref ts)) = *cache {
+            if ts.elapsed().as_secs() < DARK_MODE_TTL_SECS {
+                return value;
+            }
+        }
+    }
+    let value = menubar_is_dark();
+    if let Ok(mut cache) = DARK_MODE_CACHE.lock() {
+        *cache = Some((value, Instant::now()));
+    }
+    value
+}
+
 /// Generates a dynamic tray icon with segmented progress bars
 pub fn generate_icon(session: f64, weekly: f64) -> Image<'static> {
     let font = &*FONT;
     let mut img = RgbaImage::new(ICON_WIDTH, ICON_HEIGHT);
-    let text_color = if menubar_is_dark() { COLOR_TEXT_DARK_BG } else { COLOR_TEXT_LIGHT_BG };
+    let text_color = if menubar_is_dark_cached() { COLOR_TEXT_DARK_BG } else { COLOR_TEXT_LIGHT_BG };
 
     draw_line(&mut img, font, LINE1_Y, session, 'S', COLOR_SESSION, text_color);
     draw_line(&mut img, font, LINE2_Y, weekly, 'W', COLOR_WEEKLY, text_color);
