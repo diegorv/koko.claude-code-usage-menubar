@@ -1,7 +1,5 @@
 import { load, type Store } from '@tauri-apps/plugin-store';
-import type { UsageData } from './usage';
 
-let _usage = $state<UsageData | null>(null);
 let _intervalSeconds = $state(120);
 let _store: Store | null = null;
 
@@ -13,13 +11,6 @@ async function getStore(): Promise<Store> {
 }
 
 export const appState = {
-	get usage() {
-		return _usage;
-	},
-	set usage(v: UsageData | null) {
-		_usage = v;
-	},
-
 	get intervalSeconds() {
 		return _intervalSeconds;
 	},
