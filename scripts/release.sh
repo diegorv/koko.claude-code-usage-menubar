@@ -37,7 +37,7 @@ case "$BUMP" in
 esac
 
 # ─── Get latest tag ──────────────────────────────────────────────────
-LATEST_TAG=$(git tag --sort=-v:refname | grep -v '^nightly$' | head -1)
+LATEST_TAG=$(git tag --sort=-v:refname | grep -v '^nightly$' | head -1 || true)
 
 if [ -z "$LATEST_TAG" ]; then
   echo "No tags found. Starting from 0.1.0${SUFFIX}"
