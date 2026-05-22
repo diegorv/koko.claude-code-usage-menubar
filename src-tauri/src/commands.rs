@@ -239,19 +239,22 @@ fn parse_api_response(json: &serde_json::Value) -> UsagePayload {
 
 // --- Refresh cycle ---
 
+fn update_tray_icon(app: &AppHandle, payload: &UsagePayload) {
+    if payload.status != "ok" {
+        return;
+    }
+    let session = payload.session_percent as f64 / 100.0;
+    let weekly = payload.weekly_percent as f64 / 100.0;
+    let icon = crate::tray_icon::generate_icon(session, weekly);
+    if let Some(tray) = app.tray_by_id("main-tray") {
+        let _ = tray.set_icon(Some(icon));
+        let _ = tray.set_title(None::<&str>);
+    }
+}
+
 async fn do_refresh_cycle(app: &AppHandle) {
     let payload = fetch_usage_payload().await;
-
-    if payload.status == "ok" {
-        let session_pct = payload.session_percent as f64 / 100.0;
-        let weekly_pct = payload.weekly_percent as f64 / 100.0;
-        let icon = crate::tray_icon::generate_icon(session_pct, weekly_pct);
-        if let Some(tray) = app.tray_by_id("main-tray") {
-            let _ = tray.set_icon(Some(icon));
-            let _ = tray.set_title(None::<&str>);
-        }
-    }
-
+    update_tray_icon(app, &payload);
     let _ = app.emit("usage_updated", &payload);
 }
 
@@ -312,17 +315,7 @@ pub async fn trigger_refresh(app: AppHandle) -> Result<UsagePayload, String> {
     }
 
     let payload = fetch_usage_payload().await;
-
-    if payload.status == "ok" {
-        let session_pct = payload.session_percent as f64 / 100.0;
-        let weekly_pct = payload.weekly_percent as f64 / 100.0;
-        let icon = crate::tray_icon::generate_icon(session_pct, weekly_pct);
-        if let Some(tray) = app.tray_by_id("main-tray") {
-            let _ = tray.set_icon(Some(icon));
-            let _ = tray.set_title(None::<&str>);
-        }
-    }
-
+    update_tray_icon(&app, &payload);
     Ok(payload)
 }
 
