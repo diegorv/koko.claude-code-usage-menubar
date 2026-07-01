@@ -57,6 +57,8 @@ mod tests {
             weekly_percent: 20,
             weekly_resets_at: None,
             models: vec![],
+            extra_usage_enabled: false,
+            extra_usage_percent: 0,
             last_updated_at: 0,
             error_message: None,
         }

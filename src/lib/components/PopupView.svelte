@@ -117,6 +117,20 @@
 					</span>
 				{/if}
 			</div>
+
+			<div class="usage-row">
+				<div class="usage-label">
+					<span>Extra Usage</span>
+					{#if usage.extraUsageEnabled}
+						<span class="percent">{usage.extraUsagePercent}%</span>
+					{:else}
+						<span class="disabled-label">Disabled</span>
+					{/if}
+				</div>
+				{#if usage.extraUsageEnabled}
+					<ProgressBar percent={usage.extraUsagePercent} color="#4db6a0" />
+				{/if}
+			</div>
 		</section>
 
 		{#if usage.models.length > 0}
@@ -269,6 +283,11 @@
 
 	.reset-time {
 		font-size: 11px;
+		color: var(--text-secondary);
+	}
+
+	.disabled-label {
+		font-size: 12px;
 		color: var(--text-secondary);
 	}
 

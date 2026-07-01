@@ -7,6 +7,8 @@ pub struct UsagePayload {
     pub weekly_percent: u32,
     pub weekly_resets_at: Option<String>,
     pub models: Vec<ModelPayload>,
+    pub extra_usage_enabled: bool,
+    pub extra_usage_percent: u32,
     pub last_updated_at: u64,
     pub error_message: Option<String>,
 }
@@ -28,6 +30,8 @@ impl UsagePayload {
             weekly_percent: 0,
             weekly_resets_at: None,
             models: vec![],
+            extra_usage_enabled: false,
+            extra_usage_percent: 0,
             last_updated_at: now_millis(),
             error_message: Some(message.to_string()),
         }
@@ -103,6 +107,10 @@ pub(crate) fn parse_api_response(json: &serde_json::Value) -> UsagePayload {
             .as_str()
             .map(String::from),
         models,
+        extra_usage_enabled: json["extra_usage"]["is_enabled"]
+            .as_bool()
+            .unwrap_or(false),
+        extra_usage_percent: clamp(json["extra_usage"]["utilization"].as_f64().unwrap_or(0.0)),
         last_updated_at: now_millis(),
         error_message: None,
     }
@@ -205,5 +213,46 @@ mod tests {
         let payload = classify(200, None, "");
         assert_eq!(payload.status, "error");
         assert!(payload.error_message.unwrap().contains("Invalid JSON"));
+    }
+
+    #[test]
+    fn parse_api_response_extra_usage_enabled() {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{
+                "five_hour": {"utilization": 10.0},
+                "seven_day": {"utilization": 20.0},
+                "extra_usage": {"is_enabled": true, "utilization": 42.0}
+            }"#,
+        )
+        .unwrap();
+        let payload = parse_api_response(&json);
+        assert!(payload.extra_usage_enabled);
+        assert_eq!(payload.extra_usage_percent, 42);
+    }
+
+    #[test]
+    fn parse_api_response_extra_usage_disabled() {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{
+                "five_hour": {"utilization": 10.0},
+                "seven_day": {"utilization": 20.0},
+                "extra_usage": {"is_enabled": false, "utilization": 0.0}
+            }"#,
+        )
+        .unwrap();
+        let payload = parse_api_response(&json);
+        assert!(!payload.extra_usage_enabled);
+        assert_eq!(payload.extra_usage_percent, 0);
+    }
+
+    #[test]
+    fn parse_api_response_extra_usage_missing() {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"five_hour": {"utilization": 10.0}, "seven_day": {"utilization": 20.0}}"#,
+        )
+        .unwrap();
+        let payload = parse_api_response(&json);
+        assert!(!payload.extra_usage_enabled);
+        assert_eq!(payload.extra_usage_percent, 0);
     }
 }

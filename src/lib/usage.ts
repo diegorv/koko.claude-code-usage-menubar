@@ -11,6 +11,8 @@ export interface UsageData {
 	weeklyPercent: number;
 	weeklyResetsAt?: string;
 	models: ModelUsage[];
+	extraUsageEnabled: boolean;
+	extraUsagePercent: number;
 	lastUpdatedAt: number;
 	errorMessage?: string;
 }
