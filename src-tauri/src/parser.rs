@@ -199,6 +199,32 @@ mod tests {
         assert!(payload.models.is_empty());
     }
 
+    /// Captured from a live `/api/oauth/usage` response, with the account's
+    /// numbers and currency neutralised — the point is the shape, not the
+    /// values. The endpoint reshaped twice in July 2026 and both times the app
+    /// silently rendered less data, so pin the whole payload: unknown keys,
+    /// null per-model buckets and all.
+    const REAL_SHAPE_BODY: &str = include_str!("../fixtures/usage_response.json");
+
+    #[test]
+    fn parses_captured_live_response() {
+        let payload = classify(200, None, REAL_SHAPE_BODY);
+
+        assert_eq!(payload.status, "ok");
+        assert_eq!(payload.session_percent, 45);
+        assert_eq!(payload.weekly_percent, 67);
+
+        // Per-model data comes only from limits[] weekly_scoped, never from the
+        // deprecated seven_day_sonnet / seven_day_opus keys (null in the capture).
+        assert_eq!(payload.models.len(), 1);
+        assert_eq!(payload.models[0].name, "Fable");
+        assert_eq!(payload.models[0].percent, 30);
+        assert!(payload.models[0].resets_at.is_some());
+
+        assert!(!payload.extra_usage_enabled);
+        assert_eq!(payload.extra_usage_percent, 0);
+    }
+
     #[test]
     fn parse_api_response_clamps() {
         let json: serde_json::Value = serde_json::from_str(
