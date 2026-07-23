@@ -3,7 +3,7 @@
 	import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 	import { invoke } from '@tauri-apps/api/core';
 	import { appState } from '$lib/store.svelte';
-	import { formatTimeRemaining, type UsageData } from '$lib/usage';
+	import { barColor, formatTimeRemaining, type UsageData } from '$lib/usage';
 	import ProgressBar from './ProgressBar.svelte';
 
 	let usage = $state<UsageData | null>(null);
@@ -97,7 +97,7 @@
 					<span>Session (5h)</span>
 					<span class="percent">{usage.sessionPercent}%</span>
 				</div>
-				<ProgressBar percent={usage.sessionPercent} color="#6b7fe0" />
+				<ProgressBar percent={usage.sessionPercent} color={barColor(usage.sessionPercent, '#6b7fe0')} />
 				{#if usage.sessionResetsAt}
 					<span class="reset-time">
 						Resets in {formatTimeRemaining(usage.sessionResetsAt)}
@@ -110,7 +110,7 @@
 					<span>Weekly</span>
 					<span class="percent">{usage.weeklyPercent}%</span>
 				</div>
-				<ProgressBar percent={usage.weeklyPercent} color="#c060d0" />
+				<ProgressBar percent={usage.weeklyPercent} color={barColor(usage.weeklyPercent, '#c060d0')} />
 				{#if usage.weeklyResetsAt}
 					<span class="reset-time">
 						Resets in {formatTimeRemaining(usage.weeklyResetsAt)}
@@ -128,7 +128,7 @@
 					{/if}
 				</div>
 				{#if usage.extraUsageEnabled}
-					<ProgressBar percent={usage.extraUsagePercent} color="#4db6a0" />
+					<ProgressBar percent={usage.extraUsagePercent} color={barColor(usage.extraUsagePercent, '#4db6a0')} />
 				{/if}
 			</div>
 		</section>
@@ -142,7 +142,7 @@
 							<span>{model.name}</span>
 							<span class="percent">{model.percent}%</span>
 						</div>
-						<ProgressBar percent={model.percent} />
+						<ProgressBar percent={model.percent} color={barColor(model.percent, '#6b7fe0')} />
 					</div>
 				{/each}
 			</section>

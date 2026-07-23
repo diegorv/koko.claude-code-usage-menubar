@@ -17,6 +17,22 @@ export interface UsageData {
 	errorMessage?: string;
 }
 
+export const COLOR_WARNING = '#e0a030';
+export const COLOR_CRITICAL = '#e05050';
+
+// Percentages at or above these switch a bar away from its identity color.
+// Kept in sync with WARNING_THRESHOLD / CRITICAL_THRESHOLD in tray_icon.rs.
+export const WARNING_THRESHOLD = 80;
+export const CRITICAL_THRESHOLD = 95;
+
+// Bar color for a percentage: the row's identity color normally, escalating
+// to amber then red so a near-limit bar is obvious at a glance.
+export function barColor(percent: number, base: string): string {
+	if (percent >= CRITICAL_THRESHOLD) return COLOR_CRITICAL;
+	if (percent >= WARNING_THRESHOLD) return COLOR_WARNING;
+	return base;
+}
+
 export function formatTimeRemaining(iso: string | undefined): string {
 	if (!iso) return '';
 	const now = Date.now();

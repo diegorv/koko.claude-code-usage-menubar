@@ -57,6 +57,25 @@ const TEXT_Y_OFFSET: i32 = -3 * SCALE as i32;
 const COLOR_SESSION: Rgba<u8> = Rgba([107, 127, 224, 255]);
 const COLOR_WEEKLY: Rgba<u8> = Rgba([192, 96, 208, 255]);
 const COLOR_SEGMENT_OFF: Rgba<u8> = Rgba([140, 140, 140, 80]);
+const COLOR_WARNING: Rgba<u8> = Rgba([224, 160, 48, 255]);
+const COLOR_CRITICAL: Rgba<u8> = Rgba([224, 80, 80, 255]);
+
+// Percentages at or above these switch the bar away from its identity color.
+// Kept in sync with WARNING_THRESHOLD / CRITICAL_THRESHOLD in src/lib/usage.ts.
+const WARNING_THRESHOLD: u32 = 80;
+const CRITICAL_THRESHOLD: u32 = 95;
+
+/// Filled-segment color for a percentage: the row's identity color normally,
+/// escalating to amber then red so a near-limit bar is obvious at a glance.
+fn bar_color(pct_int: u32, base: Rgba<u8>) -> Rgba<u8> {
+    if pct_int >= CRITICAL_THRESHOLD {
+        COLOR_CRITICAL
+    } else if pct_int >= WARNING_THRESHOLD {
+        COLOR_WARNING
+    } else {
+        base
+    }
+}
 const COLOR_TEXT_DARK_BG: Rgba<u8> = Rgba([235, 235, 235, 235]);
 const COLOR_TEXT_LIGHT_BG: Rgba<u8> = Rgba([0, 0, 0, 220]);
 
@@ -138,10 +157,12 @@ fn draw_line(
     let bar_y = line_y + (LINE_HEIGHT - SEGMENT_HEIGHT) / 2;
     let filled_segments = ((NUM_SEGMENTS as f64) * clamped).round() as u32;
 
+    let filled_color = bar_color(pct_int, color);
+
     for i in 0..NUM_SEGMENTS {
         let seg_x = (BAR_X + i * (SEGMENT_WIDTH + SEGMENT_GAP)) * SCALE;
         let seg_y = bar_y * SCALE;
-        let seg_color = if i < filled_segments { color } else { COLOR_SEGMENT_OFF };
+        let seg_color = if i < filled_segments { filled_color } else { COLOR_SEGMENT_OFF };
 
         draw_filled_rect_mut(
             img,
@@ -187,5 +208,24 @@ mod tests {
     #[test]
     fn test_design_fits_height() {
         assert!(LINE2_Y + LINE_HEIGHT <= DESIGN_HEIGHT);
+    }
+
+    #[test]
+    fn bar_color_keeps_identity_below_warning() {
+        assert_eq!(bar_color(0, COLOR_SESSION), COLOR_SESSION);
+        assert_eq!(bar_color(79, COLOR_SESSION), COLOR_SESSION);
+        assert_eq!(bar_color(79, COLOR_WEEKLY), COLOR_WEEKLY);
+    }
+
+    #[test]
+    fn bar_color_warns_at_threshold() {
+        assert_eq!(bar_color(80, COLOR_SESSION), COLOR_WARNING);
+        assert_eq!(bar_color(94, COLOR_WEEKLY), COLOR_WARNING);
+    }
+
+    #[test]
+    fn bar_color_criticals_at_threshold() {
+        assert_eq!(bar_color(95, COLOR_SESSION), COLOR_CRITICAL);
+        assert_eq!(bar_color(100, COLOR_WEEKLY), COLOR_CRITICAL);
     }
 }
