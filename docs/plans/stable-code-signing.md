@@ -1,7 +1,35 @@
 # Plan: stable code signing so keychain grants persist
 
-Status: planned, not started. Follow-up to the `/usr/bin/security` shell-out already
-in `src-tauri/src/state/token_cache.rs`.
+Status: local builds done and verified. CI still unsigned — see "Remaining work".
+Follow-up to the `/usr/bin/security` shell-out in `src-tauri/src/state/token_cache.rs`.
+
+## Done
+
+Local release builds sign with the Developer ID already on the machine, and need no
+config change — the Tauri bundler picks the identity up from the environment:
+
+```bash
+export APPLE_SIGNING_IDENTITY="Developer ID Application: Diego Vieira (NJVK5PA7FJ)"
+pnpm tauri build
+```
+
+`src-tauri/tauri.conf.json` deliberately keeps no `bundle.macOS.signingIdentity`: it
+would hardcode one developer's identity into a public repo and break every other
+build. The environment variable is the same channel CI uses.
+
+The signed app carries a designated requirement with **no cdhash**:
+
+```
+designated => identifier "com.diegorv.claude-code-usage-menubar"
+  and anchor apple generic
+  and certificate 1[field.1.2.840.113635.100.6.2.6]
+  and certificate leaf[field.1.2.840.113635.100.6.1.13]
+  and certificate leaf[subject.OU] = NJVK5PA7FJ
+```
+
+Acceptance test from step 4 below, run against a real rebuild: the binary's cdhash
+changed, and the designated requirement stayed byte-identical. A keychain grant given
+to this app therefore survives rebuilds.
 
 ## Why
 
@@ -42,23 +70,43 @@ is currently wired only into CI (`.github/workflows/release.yml` passes
 `APPLE_CERTIFICATE` / `APPLE_SIGNING_IDENTITY` / `APPLE_TEAM_ID` to `tauri-action`);
 `tauri.conf.json` has no `bundle.macOS` section, so local builds get nothing.
 
-### Steps
+## Remaining work
 
-1. **Add macOS bundle signing config** to `src-tauri/tauri.conf.json` under
-   `bundle.macOS`, with the signing identity read from an environment variable so CI and
-   local builds share one path and no identity is hardcoded in a public repo.
+**CI does not sign.** `.github/workflows/release.yml` passes `APPLE_CERTIFICATE`,
+`APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY` and `APPLE_TEAM_ID` to
+`tauri-action`, but `gh secret list` returns nothing — none of them are set, so every
+artifact a tag produces is ad-hoc signed. No release has been published yet, so this
+has never actually bitten; the first tag will produce an unsigned build unless the
+secrets land first.
+
+To fix, export the Developer ID certificate **with its private key** as a `.p12` from
+Keychain Access, then set four repository secrets:
+
+| secret | value |
+| --- | --- |
+| `APPLE_CERTIFICATE` | `base64 -i cert.p12` output |
+| `APPLE_CERTIFICATE_PASSWORD` | the password used for the `.p12` export |
+| `APPLE_SIGNING_IDENTITY` | `Developer ID Application: Diego Vieira (NJVK5PA7FJ)` |
+| `APPLE_TEAM_ID` | `NJVK5PA7FJ` |
+
+The `.p12` contains a private key. Export it, upload it, delete the local file; never
+commit it, and never paste it into a terminal that logs.
+
+### Original steps, for reference
+
+1. ~~**Add macOS bundle signing config**~~ — not needed. The bundler reads
+   `APPLE_SIGNING_IDENTITY` from the environment, so no config change was required.
 
 2. **Sign local dev builds.** `tauri dev` runs the raw Mach-O out of `target/debug/`,
-   with no bundle. Either sign that binary after each build, or accept a self-signed
-   certificate created once in Keychain Access and referenced from a build script. A
-   self-signed cert is enough: its DR pins the certificate, not the code, so it is stable
-   across rebuilds and needs no paid account.
+   with no bundle, so it stays ad-hoc. Left undone on purpose: since the app reads the
+   keychain through `/usr/bin/security`, a dev build no longer needs a grant of its own,
+   which was the only reason to sign it.
 
-3. **Pin the signing identifier.** A stable DR needs a stable identifier as well as a
-   stable certificate; let Tauri set it from the bundle identifier rather than defaulting
-   to the file name.
+3. ~~**Pin the signing identifier.**~~ Already correct — the identifier comes out as
+   `com.diegorv.claude-code-usage-menubar`, matching the bundle identifier.
 
-4. **Verify the DR is stable across a rebuild.** This is the acceptance test:
+4. **Verify the DR is stable across a rebuild.** This is the acceptance test — passed,
+   see "Done" above:
 
    ```
    codesign -d -r- <binary>   # before
