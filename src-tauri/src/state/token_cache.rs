@@ -1,12 +1,32 @@
 use std::sync::Mutex;
 use std::time::Instant;
 
-// 24 hours — only re-reads keychain on auth errors
+// 24 hours — the upper bound on how long a token is reused without re-reading.
 const TOKEN_CACHE_TTL_SECS: u64 = 86400;
+
+// Every keychain read can raise a macOS authorization prompt, so never read
+// more than once per this interval. Without it, a token that the API rejects
+// makes each poll cycle invalidate and re-read, turning an expired token into
+// one prompt every polling interval until Claude Code rotates it.
+const MIN_KEYCHAIN_READ_INTERVAL_SECS: u64 = 600;
+
+struct Entry {
+    token: String,
+    read_at: Instant,
+    /// The API rejected this token, so it should be replaced when the backoff
+    /// window allows another keychain read.
+    stale: bool,
+}
+
+#[derive(Debug, PartialEq)]
+enum Decision {
+    UseCached,
+    ReadKeychain,
+}
 
 #[derive(Default)]
 pub struct TokenCache {
-    cached: Mutex<Option<(String, Instant)>>,
+    cached: Mutex<Option<Entry>>,
 }
 
 impl TokenCache {
@@ -15,44 +35,67 @@ impl TokenCache {
     }
 
     pub fn get_or_read(&self) -> Result<String, String> {
-        cached_or_fetch(&self.cached, TOKEN_CACHE_TTL_SECS, read_token_from_keychain)
+        self.get_or_read_with(read_token_from_keychain)
     }
 
+    /// Marks the cached token as rejected. Deliberately keeps the value: the
+    /// replacement only arrives once Claude Code rotates it, and dropping it
+    /// here would force a prompting keychain read on the very next cycle.
     pub fn invalidate(&self) {
         if let Ok(mut cache) = self.cached.lock() {
-            *cache = None;
-        }
-    }
-}
-
-/// Returns the cached token if it's younger than `ttl_secs`. Otherwise calls
-/// `reader`, stores the result, and returns it. Free-standing so tests can
-/// inject a counting reader without touching the keychain.
-fn cached_or_fetch<F>(
-    cache: &Mutex<Option<(String, Instant)>>,
-    ttl_secs: u64,
-    reader: F,
-) -> Result<String, String>
-where
-    F: FnOnce() -> Result<String, String>,
-{
-    {
-        let guard = cache.lock().map_err(|e| format!("Lock error: {}", e))?;
-        if let Some((ref token, ref cached_at)) = *guard {
-            if cached_at.elapsed().as_secs() < ttl_secs {
-                return Ok(token.clone());
+            if let Some(entry) = cache.as_mut() {
+                entry.stale = true;
             }
         }
     }
 
-    let token = reader()?;
-
+    /// Free-standing reader injection so tests can count reads without
+    /// touching the keychain.
+    fn get_or_read_with<F>(&self, reader: F) -> Result<String, String>
+    where
+        F: FnOnce() -> Result<String, String>,
     {
-        let mut guard = cache.lock().map_err(|e| format!("Lock error: {}", e))?;
-        *guard = Some((token.clone(), Instant::now()));
-    }
+        {
+            let guard = self.cached.lock().map_err(|e| format!("Lock error: {}", e))?;
+            if let Some(entry) = guard.as_ref() {
+                let decision = decide(
+                    entry.read_at.elapsed().as_secs(),
+                    entry.stale,
+                    TOKEN_CACHE_TTL_SECS,
+                    MIN_KEYCHAIN_READ_INTERVAL_SECS,
+                );
+                if decision == Decision::UseCached {
+                    return Ok(entry.token.clone());
+                }
+            }
+        }
 
-    Ok(token)
+        let token = reader()?;
+
+        {
+            let mut guard = self.cached.lock().map_err(|e| format!("Lock error: {}", e))?;
+            *guard = Some(Entry {
+                token: token.clone(),
+                read_at: Instant::now(),
+                stale: false,
+            });
+        }
+
+        Ok(token)
+    }
+}
+
+/// Whether a cached token can be reused. A fresh token is reused until the TTL;
+/// a rejected one is reused only until the backoff window opens, so a bad token
+/// costs failed requests rather than a stream of keychain prompts.
+fn decide(age_secs: u64, stale: bool, ttl_secs: u64, min_read_interval_secs: u64) -> Decision {
+    if age_secs < min_read_interval_secs {
+        return Decision::UseCached;
+    }
+    if stale || age_secs >= ttl_secs {
+        return Decision::ReadKeychain;
+    }
+    Decision::UseCached
 }
 
 fn read_token_from_keychain() -> Result<String, String> {
@@ -95,16 +138,31 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    const TTL: u64 = 86400;
+    const MIN: u64 = 600;
+
     #[test]
-    fn cached_or_fetch_calls_reader_when_empty() {
-        let cache = Mutex::new(None);
-        let calls = AtomicUsize::new(0);
-        let result = cached_or_fetch(&cache, 60, || {
-            calls.fetch_add(1, Ordering::SeqCst);
-            Ok("tok-a".to_string())
-        });
-        assert_eq!(result.unwrap(), "tok-a");
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    fn decide_reuses_a_fresh_token() {
+        assert_eq!(decide(0, false, TTL, MIN), Decision::UseCached);
+        assert_eq!(decide(TTL - 1, false, TTL, MIN), Decision::UseCached);
+    }
+
+    #[test]
+    fn decide_reads_again_once_the_ttl_expires() {
+        assert_eq!(decide(TTL, false, TTL, MIN), Decision::ReadKeychain);
+    }
+
+    #[test]
+    fn decide_holds_a_rejected_token_through_the_backoff_window() {
+        // The prompt storm: without this, every poll after a 401 re-read the
+        // keychain. Inside the window the stale token is reused instead.
+        assert_eq!(decide(0, true, TTL, MIN), Decision::UseCached);
+        assert_eq!(decide(MIN - 1, true, TTL, MIN), Decision::UseCached);
+    }
+
+    #[test]
+    fn decide_replaces_a_rejected_token_once_the_window_opens() {
+        assert_eq!(decide(MIN, true, TTL, MIN), Decision::ReadKeychain);
     }
 
     fn counting_reader(calls: &AtomicUsize) -> Result<String, String> {
@@ -113,49 +171,57 @@ mod tests {
     }
 
     #[test]
-    fn cached_or_fetch_skips_reader_within_ttl() {
-        let cache = Mutex::new(None);
+    fn reads_the_keychain_when_empty() {
+        let cache = TokenCache::new();
         let calls = AtomicUsize::new(0);
-
-        let first = cached_or_fetch(&cache, 60, || counting_reader(&calls)).unwrap();
-        let second = cached_or_fetch(&cache, 60, || counting_reader(&calls)).unwrap();
-
-        assert_eq!(first, "tok-0");
-        assert_eq!(second, "tok-0"); // same value: cache hit
+        let token = cache.get_or_read_with(|| counting_reader(&calls)).unwrap();
+        assert_eq!(token, "tok-0");
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]
-    fn cached_or_fetch_refetches_after_ttl_expires() {
-        let cache = Mutex::new(None);
+    fn reuses_the_cached_token_on_the_next_call() {
+        let cache = TokenCache::new();
         let calls = AtomicUsize::new(0);
-
-        cached_or_fetch(&cache, 0, || counting_reader(&calls)).unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(5));
-        let second = cached_or_fetch(&cache, 0, || counting_reader(&calls)).unwrap();
-
-        assert_eq!(second, "tok-1");
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        cache.get_or_read_with(|| counting_reader(&calls)).unwrap();
+        let second = cache.get_or_read_with(|| counting_reader(&calls)).unwrap();
+        assert_eq!(second, "tok-0");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]
-    fn cached_or_fetch_propagates_reader_error() {
-        let cache = Mutex::new(None);
-        let result = cached_or_fetch(&cache, 60, || Err("boom".to_string()));
+    fn invalidate_does_not_trigger_an_immediate_reread() {
+        // Regression guard for the prompt storm: a 401 must not cost a
+        // keychain read on the following poll.
+        let cache = TokenCache::new();
+        let calls = AtomicUsize::new(0);
+        cache.get_or_read_with(|| counting_reader(&calls)).unwrap();
+
+        cache.invalidate();
+        let after = cache.get_or_read_with(|| counting_reader(&calls)).unwrap();
+
+        assert_eq!(after, "tok-0", "stale token should be reused inside the backoff window");
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "no second keychain read");
+    }
+
+    #[test]
+    fn invalidate_marks_the_entry_stale_without_dropping_it() {
+        let cache = TokenCache::new();
+        let calls = AtomicUsize::new(0);
+        cache.get_or_read_with(|| counting_reader(&calls)).unwrap();
+        cache.invalidate();
+
+        let guard = cache.cached.lock().unwrap();
+        let entry = guard.as_ref().expect("entry kept");
+        assert!(entry.stale);
+        assert_eq!(entry.token, "tok-0");
+    }
+
+    #[test]
+    fn propagates_reader_error() {
+        let cache = TokenCache::new();
+        let result = cache.get_or_read_with(|| Err("boom".to_string()));
         assert_eq!(result.unwrap_err(), "boom");
-    }
-
-    #[test]
-    fn invalidate_forces_next_call_to_refetch() {
-        let token_cache = TokenCache::new();
-        let calls = AtomicUsize::new(0);
-
-        // Seed the cache via the free fn (bypasses keychain access).
-        cached_or_fetch(&token_cache.cached, 60, || counting_reader(&calls)).unwrap();
-        token_cache.invalidate();
-        let after = cached_or_fetch(&token_cache.cached, 60, || counting_reader(&calls)).unwrap();
-
-        assert_eq!(after, "tok-1");
     }
 
     #[test]
