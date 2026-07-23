@@ -157,6 +157,57 @@ jobs:
           releaseDraft: false
           prerelease: false
 
+      # tauri-action notarizes and staples the .app, then wraps it in a DMG
+      # — but the DMG itself never goes through the notary service. Opening
+      # the downloaded disk image therefore trips Gatekeeper
+      # ("Unnotarized Developer ID") even though the app inside is fine.
+      #
+      # Must run before the checksum step: stapling rewrites the DMG, so a
+      # hash taken earlier would not match what users download.
+      #
+      # Failing here fails the release on purpose. A half-notarized release
+      # is worse than none: the assets look official and warn on open.
+      - name: Notarize and staple the DMG
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          DMG=$(find src-tauri/target/aarch64-apple-darwin/release/bundle/dmg \
+                  -name "*.dmg" -print -quit)
+          if [ -z "$DMG" ]; then
+            echo "::error::No DMG found under the bundle directory."
+            exit 1
+          fi
+          echo "Notarizing $DMG"
+
+          # Stapling only works on a signed disk image — the notary ticket
+          # covers signed items, and an unsigned DMG fails `stapler` with a
+          # bare "Error 65". tauri-action signs the DMG, so this is a guard
+          # that turns a future regression into a readable message.
+          codesign --verify --verbose=1 "$DMG"
+
+          # --wait blocks until Apple returns a verdict and exits non-zero
+          # if the submission is rejected.
+          xcrun notarytool submit "$DMG" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+
+          xcrun stapler staple "$DMG"
+          xcrun stapler validate "$DMG"
+
+          # Prove Gatekeeper accepts it rather than trusting the exit codes
+          # above. Prints "source=Notarized Developer ID" when correct.
+          spctl -a -t open --context context:primary-signature -vv "$DMG"
+
+          # Replace the copy tauri-action already uploaded with the stapled one.
+          gh release upload "${{ github.ref_name }}" "$DMG" --clobber
+
       - name: Generate SHA-256 checksums
         run: |
           set -euo pipefail

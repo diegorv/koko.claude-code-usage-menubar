@@ -8,6 +8,7 @@ Tauri v2 (Rust) + SvelteKit macOS menubar app that shows Claude usage percentage
 - **Two data paths into the popup**: (1) `invoke('trigger_refresh')` on mount, and (2) `listen('usage_updated')` for push updates from Rust-side polling. Both must work for the popup to show data immediately on first open.
 - **`trigger_refresh` has a 30s throttle** with `LAST_FETCH` + `LAST_PAYLOAD` caches. When throttled, it returns the cached payload instead of refetching. The frontend mirrors this with a 30s cooldown on the Refresh button (bouncing dots animation while disabled).
 - **Tray icon is generated in Rust** ([tray_icon.rs](src-tauri/src/tray_icon.rs)) as an RGBA image with the percentages baked in — no native menu, click toggles the popup window.
+- **Per-model usage comes from `limits[]`, not the `seven_day_*` keys.** The API reshaped twice in July 2026. `seven_day_sonnet` / `seven_day_opus` are still present but permanently `null`; per-model figures now arrive as `limits[]` entries with `kind: "weekly_scoped"`, carrying `scope.model.display_name` and an integer `percent`. Iterate the array — never assume a fixed model set. Do **not** filter on `is_active`: only the session limit is ever `true`, so filtering hides every model. A captured payload is pinned in `src-tauri/fixtures/usage_response.json`; both reshapes were silent (200 OK, just less data), which is why `parse_api_response` sets a `shape_warning` when `limits` is missing entirely.
 
 ## Tauri gotchas (learned the hard way)
 
@@ -51,6 +52,34 @@ To get a popup that looks like a native macOS menu (blurred background, rounded 
 
 Window effects only apply when the window is created, so after changing any of this you must fully restart `pnpm tauri dev` — not just HMR.
 
+### Reading the keychain without a password prompt
+
+**Do not "modernise" [token_cache.rs](src-tauri/src/state/token_cache.rs) to call the Keychain API in-process.** It reads the OAuth token by shelling out to `/usr/bin/security`, and that is deliberate.
+
+macOS grants keychain access per requesting binary, matched against that binary's **designated requirement**. An ad-hoc signed binary — which is what every unsigned local build is — has a DR that is a literal hash of its own code. One byte of Rust changes it, macOS sees a different application, and the "Always Allow" grant no longer applies. Using `security_framework` in-process meant a login-password dialog several times a day. `/usr/bin/security` is Apple-signed with a stable DR, so a grant given to it holds permanently.
+
+Two more things kept the prompts coming, both fixed and both easy to reintroduce:
+
+- `invalidate()` must **not** drop the cached token. The API rejects a token whenever Claude Code rotates it, and the replacement only appears in the keychain some time later. Dropping the value made every poll re-read the keychain — one prompt per polling interval until rotation finished. It now marks the entry stale and keeps the value, behind a 10-minute floor between reads.
+- Every `security` invocation is bounded by a timeout with a kill fallback. A targeted lookup answers in ~10ms, but the subprocess has been observed to hang on some macOS 26.x setups.
+
+Errors from that subprocess report **stderr only** — stdout carries the secret.
+
+### Signing local builds
+
+`pnpm tauri build` produces an ad-hoc signed app unless the identity is in the environment:
+
+```bash
+export APPLE_SIGNING_IDENTITY="Developer ID Application: … (TEAMID)"
+pnpm tauri build
+```
+
+Deliberately not in `tauri.conf.json`: hardcoding one developer's identity would break every other build. CI passes the same variable from repository secrets.
+
+Check a build with `codesign -d -r- <app> | grep -c cdhash` — it must print `0`. A `cdhash` in the designated requirement means the build is still ad-hoc, and any keychain grant it holds will die on the next rebuild. See [docs/plans/stable-code-signing.md](docs/plans/stable-code-signing.md).
+
+Setting `APPLE_SIGNING_IDENTITY` as a GitHub secret, watch for a trailing newline — `gh secret set` from an interactive paste captures one, and the build then fails with `certificate from APPLE_CERTIFICATE … does not match provided identity`. Use `printf '%s' '…' | gh secret set NAME`.
+
 ### Polling and rate limits
 
 The Anthropic `/api/oauth/usage` endpoint is a plain GET, not inference. 2-minute polling (the default) = 30 req/h, well under any reasonable limit. The code already handles 429 with `Retry-After`. Don't lower the interval below ~30s without a reason.
@@ -60,6 +89,16 @@ The Anthropic `/api/oauth/usage` endpoint is a plain GET, not inference. 2-minut
 - `pnpm tauri dev` — runs Vite + cargo. Changes to Rust require a restart; Svelte hot-reloads.
 - Frontend console is via Safari → Develop → (app name) → popup. Capabilities must allow devtools on that window label.
 - `cargo check` from `src-tauri/` for quick Rust validation without rebuilding the app.
+
+### Dependencies
+
+[pnpm-workspace.yaml](pnpm-workspace.yaml) enforces a 7-day quarantine (`minimumReleaseAge`): a version published less than a week ago will not resolve. `pnpm update --latest` can therefore leave `package.json` pointing at a floor no mature version satisfies, and the next install dies with `ERR_PNPM_NO_MATURE_MATCHING_VERSION`. Lower the offending floor rather than relaxing the policy. Run `pnpm outdated` (`scripts/check-outdated-quarantine.mjs`) to see what is actually installable today instead of what npm advertises.
+
+Both `overrides` entries and the `chokidar` trust waiver were verified to be load-bearing — dropping either breaks something concretely. Don't prune them as dead config without re-testing.
+
+**TypeScript is capped below 7.** TS 7 changed its module export shape and svelte-check still reads `typescript.default`, so `pnpm check` crashes before it type-checks anything. `pnpm outdated` cannot see that and will keep advertising the upgrade. Verify by running `pnpm check`, not by trusting the version bump.
+
+`pnpm audit` runs through `scripts/quarantine-aware-audit.mjs` in CI: for up to a week after an advisory lands, the patch exists but the quarantine refuses it, and a plain audit would fail the job for a state the repo cannot fix.
 
 ## Agent skills
 
