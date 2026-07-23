@@ -11,6 +11,9 @@ pub struct UsagePayload {
     pub extra_usage_percent: u32,
     pub last_updated_at: u64,
     pub error_message: Option<String>,
+    /// Set when the response parsed but didn't look the way we expect, so a
+    /// silent shape change surfaces instead of just rendering less data.
+    pub shape_warning: Option<String>,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -34,6 +37,7 @@ impl UsagePayload {
             extra_usage_percent: 0,
             last_updated_at: now_millis(),
             error_message: Some(message.to_string()),
+            shape_warning: None,
         }
     }
 }
@@ -76,6 +80,15 @@ fn parse_success_body(body: &str) -> UsagePayload {
 pub(crate) fn parse_api_response(json: &serde_json::Value) -> UsagePayload {
     let clamp = |v: f64| v.max(0.0).min(100.0).round() as u32;
 
+    // `limits` has been present in every observed response. Its absence means
+    // the payload moved again, which would otherwise show up only as a popup
+    // that quietly renders less — the exact failure mode that hid the previous
+    // two reshapes. An empty array is fine: that legitimately means "nothing
+    // reported right now".
+    let shape_warning = (!json["limits"].is_array()).then(|| {
+        "Unexpected API response shape — some usage data may be missing.".to_string()
+    });
+
     // Per-model limits live in `limits[]` as `weekly_scoped` entries carrying
     // `scope.model.display_name`. The old `seven_day_sonnet` / `seven_day_opus`
     // buckets are deprecated and always null. Don't filter on `is_active` —
@@ -115,6 +128,7 @@ pub(crate) fn parse_api_response(json: &serde_json::Value) -> UsagePayload {
         extra_usage_percent: clamp(json["extra_usage"]["utilization"].as_f64().unwrap_or(0.0)),
         last_updated_at: now_millis(),
         error_message: None,
+        shape_warning,
     }
 }
 
@@ -223,6 +237,38 @@ mod tests {
 
         assert!(!payload.extra_usage_enabled);
         assert_eq!(payload.extra_usage_percent, 0);
+    }
+
+    #[test]
+    fn captured_response_has_no_shape_warning() {
+        let payload = classify(200, None, REAL_SHAPE_BODY);
+        assert_eq!(payload.shape_warning, None);
+    }
+
+    #[test]
+    fn missing_limits_array_warns() {
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{"five_hour": {"utilization": 10.0}}"#).unwrap();
+        let payload = parse_api_response(&json);
+        assert!(payload.shape_warning.is_some());
+        // Session data still parsed — a shape change shouldn't blank the popup.
+        assert_eq!(payload.session_percent, 10);
+    }
+
+    #[test]
+    fn non_array_limits_warns() {
+        let json: serde_json::Value = serde_json::from_str(r#"{"limits": {"session": 10}}"#).unwrap();
+        let payload = parse_api_response(&json);
+        assert!(payload.shape_warning.is_some());
+    }
+
+    #[test]
+    fn empty_limits_array_does_not_warn() {
+        // A legitimately empty array means "no limits reported right now",
+        // which the API did return before scoped limits existed. Not a drift.
+        let json: serde_json::Value = serde_json::from_str(r#"{"limits": []}"#).unwrap();
+        let payload = parse_api_response(&json);
+        assert_eq!(payload.shape_warning, None);
     }
 
     #[test]

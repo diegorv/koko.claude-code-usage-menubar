@@ -61,6 +61,7 @@ mod tests {
             extra_usage_percent: 0,
             last_updated_at: 0,
             error_message: None,
+            shape_warning: None,
         }
     }
 

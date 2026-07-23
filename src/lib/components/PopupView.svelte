@@ -91,6 +91,10 @@
 	{:else if usage.status !== 'ok'}
 		<div class="error">{usage.errorMessage}</div>
 	{:else}
+		{#if usage.shapeWarning}
+			<div class="shape-warning">{usage.shapeWarning}</div>
+		{/if}
+
 		<section class="usage-section">
 			<div class="usage-row">
 				<div class="usage-label">
@@ -284,6 +288,17 @@
 	.reset-time {
 		font-size: 11px;
 		color: var(--text-secondary);
+	}
+
+	.shape-warning {
+		background: #e0a03018;
+		border: 1px solid #e0a030;
+		border-radius: 6px;
+		padding: 8px 10px;
+		margin-bottom: 14px;
+		color: #e0a030;
+		font-size: 11px;
+		line-height: 1.4;
 	}
 
 	.disabled-label {

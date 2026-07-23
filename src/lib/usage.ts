@@ -15,6 +15,7 @@ export interface UsageData {
 	extraUsagePercent: number;
 	lastUpdatedAt: number;
 	errorMessage?: string;
+	shapeWarning?: string;
 }
 
 export const COLOR_WARNING = '#e0a030';
