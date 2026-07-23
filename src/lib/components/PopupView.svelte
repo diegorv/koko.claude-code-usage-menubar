@@ -1,5 +1,6 @@
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
+	import { onMount, onDestroy, tick } from 'svelte';
+	import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
 	import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 	import { invoke } from '@tauri-apps/api/core';
 	import { appState } from '$lib/store.svelte';
@@ -42,6 +43,31 @@
 			refreshing = false;
 		}
 	}
+
+	// The popup has no scrollbar, so anything taller than the window is simply
+	// cut off — the footer buttons were. Content height varies: the models
+	// section grows with however many scoped limits the API reports, and the
+	// shape warning appears only sometimes. Measure and resize instead of
+	// guessing a fixed height.
+	const POPUP_WIDTH = 320;
+
+	async function fitWindowToContent() {
+		await tick();
+		const el = document.querySelector('.popup-container');
+		if (!el) return;
+		const height = Math.ceil(el.getBoundingClientRect().height);
+		try {
+			await getCurrentWindow().setSize(new LogicalSize(POPUP_WIDTH, height));
+		} catch {
+			// Resize not permitted — keep the size configured at build time.
+		}
+	}
+
+	$effect(() => {
+		// Re-fit whenever what we render changes.
+		void usage;
+		fitWindowToContent();
+	});
 
 	async function handleQuit() {
 		await invoke('quit_app');
