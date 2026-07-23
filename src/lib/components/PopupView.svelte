@@ -146,7 +146,12 @@
 							<span>{model.name}</span>
 							<span class="percent">{model.percent}%</span>
 						</div>
-						<ProgressBar percent={model.percent} color={barColor(model.percent, '#6b7fe0')} />
+						<ProgressBar percent={model.percent} color={barColor(model.percent, '#3fa0c9')} />
+						{#if model.resetsAt}
+							<span class="reset-time">
+								Resets in {formatTimeRemaining(model.resetsAt)}
+							</span>
+						{/if}
 					</div>
 				{/each}
 			</section>
