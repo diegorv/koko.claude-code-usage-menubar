@@ -32,8 +32,15 @@ jobs:
 
       - name: Audit dependencies
         # `--audit-level=moderate` matches the dependency-review threshold
-        # below: a moderate-or-higher advisory blocks the PR.
-        run: pnpm audit --audit-level=moderate
+        # below: a moderate-or-higher advisory blocks the PR. Run through
+        # the quarantine-aware wrapper rather than `pnpm audit` directly:
+        # `minimumReleaseAge` in pnpm-workspace.yaml refuses versions newer
+        # than 7 days, so for up to a week after an advisory lands the patch
+        # exists but is not installable. A plain audit fails the job for a
+        # state the repo cannot fix. The wrapper still fails on advisories
+        # whose patch has aged past the window. See
+        # `scripts/quarantine-aware-audit.mjs` for the full classification.
+        run: node scripts/quarantine-aware-audit.mjs
 
   cargo-audit:
     name: Cargo Audit

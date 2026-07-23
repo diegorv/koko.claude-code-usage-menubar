@@ -1,0 +1,71 @@
+# Supply chain defense: refuse to resolve any package version
+# published less than 7 days (10080 minutes) ago.
+# See: https://pnpm.io/settings#minimumreleaseage
+#
+# Exclude-list scope: blanket bypass of the quarantine for a package or
+# scope. Use ONLY for packages that need to ship on day-0 by policy. Do
+# NOT add entries here for one-off security patches — the patch ages
+# past 7 days on its own and the exclude turns into dead weight.
+minimumReleaseAge: 10080
+minimumReleaseAgeExclude:
+  # Tauri JS packages must stay in lockstep with the Rust crates of the
+  # same name. A fresh crate release paired with a `@tauri-apps/*` JS
+  # release MUST be installable on day 0 to keep the frontend and Rust
+  # sides compatible. Continuous policy, not a one-off patch.
+  - '@tauri-apps/*'
+
+# Supply chain hardening. The first two are pnpm v11 defaults (true) —
+# pinned explicitly so a future pnpm default flip can't silently disable
+# them. `trustPolicy` defaults to OFF, so it MUST be set to take effect.
+#
+# - blockExoticSubdeps: transitive deps may only resolve from the
+#   registry — git URLs and direct tarball URLs are rejected for
+#   subdeps (direct deps in package.json are exempt).
+# - strictDepBuilds: abort `pnpm install` with a non-zero exit if any
+#   dependency declares an unreviewed install/build script not listed in
+#   `allowBuilds`. This project currently has no such dependency, so
+#   there is no `allowBuilds` map — adding one means a new package
+#   started running scripts, which is worth reading before allowing.
+# - trustPolicy=no-downgrade: refuse a version whose publish-time trust
+#   level dropped vs an earlier release (e.g. a dep that previously
+#   shipped with OIDC/provenance suddenly ships without it) — a common
+#   account-compromise signal.
+blockExoticSubdeps: true
+strictDepBuilds: true
+trustPolicy: no-downgrade
+# Per-version waivers for `trustPolicy`. pnpm flags a "trust downgrade"
+# when a version's publish-time provenance/signing differs from an
+# earlier release. That is not always a takeover — a maintainer changing
+# their CI/publish setup across a major version trips the same signal.
+#
+# - chokidar@4.0.3: published 2024-12-18 by paulmillr (the canonical
+#   owner). v4 was a ground-up rewrite whose publish setup differs from
+#   the v3 line, so pnpm reports a downgrade. v5 re-adds OIDC provenance
+#   but is out of svelte-check's `^4.0.1` range. Benign and widely used;
+#   reaches us only as a dev-only transitive of svelte-check (never in
+#   the shipped app bundle). Re-audit if chokidar's maintainer set ever
+#   changes.
+trustPolicyExclude:
+  - 'chokidar@4.0.3'
+
+overrides:
+  # @sveltejs/kit resolves cookie@0.6.0, which is below the fix for
+  # GHSA-pxg6-pf52-xh8x (accepts out-of-bounds characters in cookie
+  # name, path and domain). `pnpm update` cannot reach the patch because
+  # kit's range pins the 0.6 line.
+  #
+  # The upper bound matters: cookie@2 is a breaking major that renames
+  # `parse`/`serialize` to `parseCookie`/`stringifyCookie`, which crashes
+  # SvelteKit's SSR (`import { serialize } from 'cookie'`). Keep the
+  # security floor, cap below 2 until SvelteKit supports it.
+  cookie: '>=0.7.0 <2'
+  # TypeScript 7 changed the shape of its module export, and svelte-check
+  # (4.7.3, the current release) still reaches for `typescript.default`.
+  # Under TS 7 that is undefined and `pnpm check` dies before it type-checks
+  # anything:
+  #   TypeError: Cannot read properties of undefined (reading
+  #   'useCaseSensitiveFileNames')
+  # `pnpm outdated` will keep advertising 7.x as available — it cannot see
+  # this incompatibility. Lift the cap once svelte-check ships TS 7 support,
+  # and verify by running `pnpm check`, not by trusting the version bump.
+  typescript: '<7'

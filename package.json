@@ -11,25 +11,29 @@
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "test": "vitest run",
     "test:watch": "vitest",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "audit": "node scripts/quarantine-aware-audit.mjs",
+    "outdated": "node scripts/check-outdated-quarantine.mjs"
   },
   "license": "MIT",
   "packageManager": "pnpm@11.2.2",
   "dependencies": {
-    "@tauri-apps/api": "^2.10.1",
-    "@tauri-apps/plugin-opener": "^2.5.3",
-    "@tauri-apps/plugin-store": "^2.4.2"
+    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-opener": "^2.5.4",
+    "@tauri-apps/plugin-store": "^2.4.4"
   },
   "devDependencies": {
     "@sveltejs/adapter-static": "^3.0.10",
     "@sveltejs/kit": "^2.57.1",
-    "@sveltejs/vite-plugin-svelte": "^7.0.0",
+    "@sveltejs/vite-plugin-svelte": "^7.2.0",
+    "@tauri-apps/cli": "^2.11.4",
+    "jsdom": "^29.1.1",
+    "semver": "^7.8.5",
     "svelte": "^5.55.3",
-    "svelte-check": "^4.4.6",
-    "typescript": "~6.0.2",
-    "vite": "^8.0.8",
-    "vitest": "^4.1.4",
-    "jsdom": "^29.0.2",
-    "@tauri-apps/cli": "^2.10.1"
+    "svelte-check": "^4.7.3",
+    "typescript": "~6.0.3",
+    "vite": "^8.1.5",
+    "vitest": "^4.1.10",
+    "yaml": "^2.9.0"
   }
 }
