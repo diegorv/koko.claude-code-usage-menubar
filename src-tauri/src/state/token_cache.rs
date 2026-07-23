@@ -98,27 +98,84 @@ fn decide(age_secs: u64, stale: bool, ttl_secs: u64, min_read_interval_secs: u64
     Decision::UseCached
 }
 
+/// A hung `security` call would block the caller, so every invocation is
+/// bounded. A targeted lookup answers in ~10ms; three seconds is pure headroom.
+#[cfg(target_os = "macos")]
+const SECURITY_CMD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Reads the token by shelling out to `/usr/bin/security` rather than calling
+/// the Keychain API in-process.
+///
+/// The item's ACL grants access per requesting binary, matched against that
+/// binary's designated requirement. This app is ad-hoc signed, so its
+/// requirement is a hash of its own code and changes on every build — an
+/// "Always Allow" grant can never stay attached to it, and macOS prompts for
+/// the login password again and again. `/usr/bin/security` is Apple-signed
+/// with a stable requirement, so a grant given to it holds permanently.
+#[cfg(target_os = "macos")]
 fn read_token_from_keychain() -> Result<String, String> {
-    #[cfg(target_os = "macos")]
-    {
-        use security_framework::passwords::get_generic_password;
+    use std::io::Read;
+    use std::process::{Command, Stdio};
 
-        let username = std::env::var("USER")
-            .map_err(|_| "Could not get username".to_string())?;
+    let username = std::env::var("USER").map_err(|_| "Could not get username".to_string())?;
 
-        let password_data = get_generic_password("Claude Code-credentials", &username)
-            .map_err(|e| format!("Failed to read keychain: {}", e))?;
+    let mut child = Command::new("/usr/bin/security")
+        .args([
+            "find-generic-password",
+            "-s",
+            "Claude Code-credentials",
+            "-a",
+            &username,
+            "-w",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to run security: {}", e))?;
 
-        let json_str = String::from_utf8(password_data.to_vec())
-            .map_err(|e| format!("Invalid UTF-8 in keychain: {}", e))?;
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(e) => return Err(format!("Failed to wait for security: {}", e)),
+        }
+        if started.elapsed() >= SECURITY_CMD_TIMEOUT {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("Timed out reading the keychain".to_string());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
 
-        parse_keychain_json(&json_str)
+    if !status.success() {
+        // Only stderr — stdout carries the secret.
+        let mut stderr = String::new();
+        if let Some(mut pipe) = child.stderr.take() {
+            let _ = pipe.read_to_string(&mut stderr);
+        }
+        let detail = stderr.trim();
+        return Err(if detail.is_empty() {
+            "Failed to read keychain".to_string()
+        } else {
+            format!("Failed to read keychain: {}", detail)
+        });
     }
 
-    #[cfg(not(target_os = "macos"))]
-    {
-        Err("Keychain access only available on macOS".to_string())
-    }
+    let mut stdout = String::new();
+    child
+        .stdout
+        .take()
+        .ok_or_else(|| "No output from security".to_string())?
+        .read_to_string(&mut stdout)
+        .map_err(|e| format!("Failed to read security output: {}", e))?;
+
+    parse_keychain_json(stdout.trim())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn read_token_from_keychain() -> Result<String, String> {
+    Err("Keychain access only available on macOS".to_string())
 }
 
 /// Extracts access token from keychain JSON
@@ -253,3 +310,4 @@ mod tests {
         assert!(result.unwrap_err().contains("Invalid JSON"));
     }
 }
+
