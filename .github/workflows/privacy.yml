@@ -1,0 +1,136 @@
+name: Privacy
+
+# Fails the build when code gains an external network call that has not
+# been reviewed. This app reads an OAuth token out of the macOS keychain
+# and sends it somewhere, so "which hosts does this binary talk to" is a
+# property worth pinning rather than rediscovering during a review.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "src-tauri/src/**"
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "src-tauri/src/**"
+  workflow_dispatch:
+  # Reusable: invoked by `.github/workflows/run-all.yml`.
+  workflow_call:
+
+concurrency:
+  group: privacy-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  scan-external-calls:
+    name: Scan for External Calls
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+
+      # ── TypeScript / Svelte / JS scan ─────────────────────────────────
+      # The frontend is not supposed to reach the network at all — it
+      # talks to Rust over `invoke` and receives `usage_updated` events.
+      # Nothing is on the known list on purpose: a match here means the
+      # frontend started making its own calls, which is worth reading.
+      - uses: ./.github/actions/scan-external-calls
+        with:
+          language-label: TypeScript/Svelte
+          root: src
+          include-globs: "*.ts,*.svelte,*.js"
+          patterns: |
+            # Native APIs
+            fetch\s*\(
+            XMLHttpRequest
+            navigator\.sendBeacon
+            WebSocket\s*\(
+            EventSource\s*\(
+            \.open\s*\(\s*["\x27](?:GET|POST|PUT|DELETE|PATCH)
+            RTCPeerConnection
+            navigator\.geolocation
+            # External resource loading
+            script\.src\s*=
+            iframe\.src\s*=
+            new\s+Image\s*\(.*\.src\s*=
+            new\s+Worker\s*\(
+            new\s+SharedWorker\s*\(
+            ServiceWorker\.register
+            # HTTP libraries (import/require)
+            import.*\b(axios|got|node-fetch|ky|superagent|undici|needle|request)\b
+            require\s*\(\s*["\x27](axios|got|node-fetch|ky|superagent|undici|needle|request)["\x27]\)
+            # Tauri's HTTP plugin would let the webview reach the network
+            # directly, bypassing the Rust fetch path
+            @tauri-apps/plugin-http
+            # Hardcoded URLs
+            https?://
+          skip: |
+            \.test\.ts
+            \.spec\.ts
+            node_modules
+            \.svelte-kit/
+            \.d\.ts:
+            localhost
+            127\.0\.0\.1
+            tauri\.localhost
+            privacy-ok
+            # Comment lines (no network calls) — the docs links in
+            # src/routes/+layout.ts land here
+            :\s*//
+            :\s*\*
+            :\s*/\*
+            # Non-network inline references
+            w3\.org
+            example\.com
+
+      # ── Rust scan ─────────────────────────────────────────────────────
+      # All network access lives here. Exactly one endpoint is expected;
+      # anything else fails the job.
+      - uses: ./.github/actions/scan-external-calls
+        with:
+          language-label: Rust
+          root: src-tauri/src
+          include-globs: "*.rs"
+          patterns: |
+            # HTTP clients
+            reqwest
+            hyper::client
+            surf::
+            ureq::
+            curl::
+            attohttpc
+            isahc::
+            minreq::
+            awc::
+            # gRPC
+            tonic::transport
+            # Raw networking
+            TcpStream::connect
+            UdpSocket::connect
+            # Hardcoded URLs
+            https?://
+          skip: |
+            _test\.rs
+            tests/
+            target/
+            localhost
+            127\.0\.0\.1
+            privacy-ok
+            # Reserved documentation domain (RFC 2606), never a real endpoint
+            example\.com
+            # Rust doc-comment lines (/// ...) make no network calls
+            :\s*///
+          known: |
+            # The only endpoint this app talks to: the usage figures shown
+            # in the tray and popup. Defined as USAGE_API_URL in
+            # src/commands.rs and called with the keychain OAuth token.
+            api\.anthropic\.com
+            # The sanctioned HTTP client. It is only ever pointed at the
+            # host above; a new host would surface as its own match.
+            reqwest
