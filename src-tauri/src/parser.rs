@@ -76,25 +76,27 @@ fn parse_success_body(body: &str) -> UsagePayload {
 pub(crate) fn parse_api_response(json: &serde_json::Value) -> UsagePayload {
     let clamp = |v: f64| v.max(0.0).min(100.0).round() as u32;
 
-    let mut models = Vec::new();
-    if let Some(util) = json["seven_day_sonnet"]["utilization"].as_f64() {
-        models.push(ModelPayload {
-            name: "Sonnet".to_string(),
-            percent: clamp(util),
-            resets_at: json["seven_day_sonnet"]["resets_at"]
-                .as_str()
-                .map(String::from),
-        });
-    }
-    if let Some(util) = json["seven_day_opus"]["utilization"].as_f64() {
-        models.push(ModelPayload {
-            name: "Opus".to_string(),
-            percent: clamp(util),
-            resets_at: json["seven_day_opus"]["resets_at"]
-                .as_str()
-                .map(String::from),
-        });
-    }
+    // Per-model limits live in `limits[]` as `weekly_scoped` entries carrying
+    // `scope.model.display_name`. The old `seven_day_sonnet` / `seven_day_opus`
+    // buckets are deprecated and always null. Don't filter on `is_active` —
+    // only the session limit is ever active, so it would hide every model.
+    let models = json["limits"]
+        .as_array()
+        .map(|limits| {
+            limits
+                .iter()
+                .filter(|limit| limit["kind"] == "weekly_scoped")
+                .filter_map(|limit| {
+                    let name = limit["scope"]["model"]["display_name"].as_str()?;
+                    Some(ModelPayload {
+                        name: name.to_string(),
+                        percent: clamp(limit["percent"].as_f64().unwrap_or(0.0)),
+                        resets_at: limit["resets_at"].as_str().map(String::from),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
 
     UsagePayload {
         status: "ok".to_string(),
@@ -123,8 +125,16 @@ mod tests {
     const OK_BODY: &str = r#"{
         "five_hour": {"utilization": 45.0, "resets_at": "2024-01-01T00:00:00Z"},
         "seven_day": {"utilization": 67.0, "resets_at": "2024-01-07T00:00:00Z"},
-        "seven_day_sonnet": {"utilization": 30.0},
-        "seven_day_opus": {"utilization": 80.0}
+        "seven_day_sonnet": null,
+        "seven_day_opus": null,
+        "limits": [
+            {"kind": "session", "percent": 45, "scope": null},
+            {"kind": "weekly_all", "percent": 67, "scope": null},
+            {"kind": "weekly_scoped", "percent": 30,
+             "scope": {"model": {"id": null, "display_name": "Sonnet"}, "surface": null}},
+            {"kind": "weekly_scoped", "percent": 80, "resets_at": "2024-01-07T00:00:00Z",
+             "scope": {"model": {"id": null, "display_name": "Opus"}, "surface": null}}
+        ]
     }"#;
 
     #[test]
@@ -139,6 +149,54 @@ mod tests {
         assert_eq!(payload.models[0].percent, 30);
         assert_eq!(payload.models[1].name, "Opus");
         assert_eq!(payload.models[1].percent, 80);
+        assert_eq!(
+            payload.models[1].resets_at.as_deref(),
+            Some("2024-01-07T00:00:00Z")
+        );
+    }
+
+    #[test]
+    fn parse_api_response_skips_scoped_without_model_name() {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{
+                "limits": [
+                    {"kind": "weekly_scoped", "percent": 10, "scope": {"surface": "code"}},
+                    {"kind": "weekly_scoped", "percent": 20,
+                     "scope": {"model": {"display_name": "Fable"}}}
+                ]
+            }"#,
+        )
+        .unwrap();
+        let payload = parse_api_response(&json);
+        assert_eq!(payload.models.len(), 1);
+        assert_eq!(payload.models[0].name, "Fable");
+        assert_eq!(payload.models[0].percent, 20);
+    }
+
+    #[test]
+    fn parse_api_response_without_limits_has_no_models() {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"five_hour": {"utilization": 1.0}, "seven_day": {"utilization": 2.0}}"#,
+        )
+        .unwrap();
+        let payload = parse_api_response(&json);
+        assert!(payload.models.is_empty());
+    }
+
+    #[test]
+    fn parse_api_response_ignores_deprecated_per_model_buckets() {
+        // Old shape: data lived in seven_day_sonnet/seven_day_opus. Now deprecated
+        // (always null in the live API); only limits[] weekly_scoped counts.
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{
+                "seven_day_sonnet": {"utilization": 30.0},
+                "seven_day_opus": {"utilization": 80.0},
+                "limits": []
+            }"#,
+        )
+        .unwrap();
+        let payload = parse_api_response(&json);
+        assert!(payload.models.is_empty());
     }
 
     #[test]
