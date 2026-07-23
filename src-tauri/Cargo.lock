@@ -605,7 +605,7 @@ dependencies = [
 
 [[package]]
 name = "claude-code-usage-menubar"
-version = "0.0.1-alpha"
+version = "0.1.0-alpha"
 dependencies = [
  "ab_glyph",
  "image",
