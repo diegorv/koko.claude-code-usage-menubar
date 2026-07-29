@@ -143,3 +143,25 @@ pub async fn hide_popup(app: AppHandle) -> Result<(), String> {
 pub fn quit_app(app: AppHandle) {
     app.exit(0);
 }
+
+// --- Kimi API key management ---
+
+/// Stores the Kimi API key in the macOS Keychain (updates in place).
+#[tauri::command]
+pub fn save_kimi_key(key: String) -> Result<(), String> {
+    crate::state::kimi_key::save(&key)
+}
+
+/// Removes the Kimi API key from the macOS Keychain.
+#[tauri::command]
+pub fn delete_kimi_key() -> Result<(), String> {
+    crate::state::kimi_key::remove()
+}
+
+/// Whether a Kimi API key is stored. The key itself never crosses the IPC
+/// boundary — booleans only. Keychain infrastructure errors (e.g. a timed-out
+/// `security` call) read as "no key" so the indicator never throws.
+#[tauri::command]
+pub fn has_kimi_key() -> bool {
+    crate::state::kimi_key::exists().unwrap_or(false)
+}

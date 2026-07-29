@@ -24,6 +24,9 @@ pub fn run() {
             commands::trigger_refresh,
             commands::hide_popup,
             commands::quit_app,
+            commands::save_kimi_key,
+            commands::delete_kimi_key,
+            commands::has_kimi_key,
         ])
         .setup(setup_app)
         .on_window_event(handle_window_event)

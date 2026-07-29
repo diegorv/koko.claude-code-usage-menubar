@@ -1,3 +1,4 @@
+pub(crate) mod kimi_key;
 pub(crate) mod payload_cache;
 pub(crate) mod poller;
 pub(crate) mod token_cache;

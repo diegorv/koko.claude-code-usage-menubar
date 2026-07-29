@@ -21,6 +21,54 @@
 
 	let selectedInterval = $state(120);
 
+	let settingsOpen = $state(false);
+	let hasKimiKey = $state(false);
+	let kimiKeyInput = $state('');
+	let kimiKeyBusy = $state(false);
+	let kimiKeyError = $state('');
+
+	async function toggleSettings() {
+		settingsOpen = !settingsOpen;
+		kimiKeyError = '';
+		if (settingsOpen) {
+			try {
+				hasKimiKey = await invoke<boolean>('has_kimi_key');
+			} catch {
+				hasKimiKey = false;
+			}
+		}
+	}
+
+	async function handleSaveKimiKey() {
+		const key = kimiKeyInput.trim();
+		if (!key || kimiKeyBusy) return;
+		kimiKeyBusy = true;
+		kimiKeyError = '';
+		try {
+			await invoke('save_kimi_key', { key });
+			hasKimiKey = true;
+			kimiKeyInput = '';
+		} catch (e) {
+			kimiKeyError = String(e);
+		} finally {
+			kimiKeyBusy = false;
+		}
+	}
+
+	async function handleRemoveKimiKey() {
+		if (kimiKeyBusy) return;
+		kimiKeyBusy = true;
+		kimiKeyError = '';
+		try {
+			await invoke('delete_kimi_key');
+			hasKimiKey = false;
+		} catch (e) {
+			kimiKeyError = String(e);
+		} finally {
+			kimiKeyBusy = false;
+		}
+	}
+
 	async function handleIntervalChange() {
 		await appState.saveInterval(selectedInterval);
 		await invoke('start_auto_refresh', { intervalSecs: selectedInterval });
@@ -66,6 +114,8 @@
 	$effect(() => {
 		// Re-fit whenever what we render changes.
 		void usage;
+		void settingsOpen;
+		void kimiKeyError;
 		fitWindowToContent();
 	});
 
@@ -185,25 +235,63 @@
 	{/if}
 
 	<footer>
-		<div class="interval-setting">
-			<select bind:value={selectedInterval} onchange={handleIntervalChange}>
-				{#each intervalOptions as opt}
-					<option value={opt.value}>{opt.label}</option>
-				{/each}
-			</select>
+		{#if settingsOpen}
+			<div class="settings-panel">
+				<div class="settings-header">
+					<span>Kimi API Key</span>
+					<span class="key-status" class:saved={hasKimiKey}>
+						{hasKimiKey ? 'Saved' : 'Not saved'}
+					</span>
+				</div>
+				<input
+					type="password"
+					class="key-input"
+					placeholder="Paste key here"
+					bind:value={kimiKeyInput}
+				/>
+				{#if kimiKeyError}
+					<span class="settings-error">{kimiKeyError}</span>
+				{/if}
+				<div class="settings-actions">
+					<button
+						class="action-btn"
+						onclick={handleSaveKimiKey}
+						disabled={kimiKeyBusy || kimiKeyInput.trim() === ''}
+					>
+						Save
+					</button>
+					<button
+						class="action-btn"
+						onclick={handleRemoveKimiKey}
+						disabled={kimiKeyBusy || !hasKimiKey}
+					>
+						Remove
+					</button>
+				</div>
+			</div>
+		{/if}
+		<div class="footer-row">
+			<div class="interval-setting">
+				<select bind:value={selectedInterval} onchange={handleIntervalChange}>
+					{#each intervalOptions as opt}
+						<option value={opt.value}>{opt.label}</option>
+					{/each}
+				</select>
+			</div>
+			<button class="action-btn" onclick={handleRefresh} disabled={refreshing || cooldown}>
+				{#if refreshing}
+					...
+				{:else if cooldown}
+					<span class="dots">
+					<span class="dot"></span><span class="dot"></span><span class="dot"></span>
+				</span>
+				{:else}
+					Refresh
+				{/if}
+			</button>
+			<button class="action-btn" onclick={toggleSettings}>Settings</button>
+			<button class="action-btn quit" onclick={handleQuit}>Quit</button>
 		</div>
-		<button class="action-btn" onclick={handleRefresh} disabled={refreshing || cooldown}>
-			{#if refreshing}
-				...
-			{:else if cooldown}
-				<span class="dots">
-				<span class="dot"></span><span class="dot"></span><span class="dot"></span>
-			</span>
-			{:else}
-				Refresh
-			{/if}
-		</button>
-		<button class="action-btn quit" onclick={handleQuit}>Quit</button>
 	</footer>
 </div>
 
@@ -339,10 +427,63 @@
 
 	footer {
 		display: flex;
-		gap: 8px;
+		flex-direction: column;
+		gap: 10px;
 		margin-top: 16px;
 		padding-top: 12px;
 		border-top: 1px solid var(--popup-border);
+	}
+
+	.footer-row {
+		display: flex;
+		gap: 8px;
+	}
+
+	.settings-panel {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.settings-header {
+		display: flex;
+		justify-content: space-between;
+		align-items: baseline;
+		font-size: 12px;
+		font-weight: 500;
+	}
+
+	.key-status {
+		font-size: 11px;
+		color: var(--text-secondary);
+	}
+
+	.key-status.saved {
+		color: #34c759;
+	}
+
+	.key-input {
+		width: 100%;
+		box-sizing: border-box;
+		padding: 6px 12px;
+		border-radius: 6px;
+		border: 1px solid var(--popup-border);
+		background: transparent;
+		color: var(--text-primary);
+		font-size: 12px;
+		-webkit-user-select: text;
+		user-select: text;
+	}
+
+	.settings-error {
+		color: #ff3b30;
+		font-size: 11px;
+		line-height: 1.4;
+	}
+
+	.settings-actions {
+		display: flex;
+		gap: 8px;
 	}
 
 	.action-btn {
