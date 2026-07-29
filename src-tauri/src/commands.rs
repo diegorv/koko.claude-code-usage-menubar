@@ -1,7 +1,7 @@
 use std::sync::LazyLock;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::parser::{self, UsagePayload};
+use crate::parser::{self, ProviderPayload, ProviderStatus, UsagePayload};
 use crate::state::{PayloadCache, TokenCache, UsagePoller};
 
 static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
@@ -24,11 +24,11 @@ async fn fetch_usage_payload(token_cache: &TokenCache, payload_cache: &PayloadCa
         Ok(t) => t,
         Err(e) => {
             let status = if e.contains("Failed to read keychain") || e.contains("No accessToken") {
-                "missing_credentials"
+                ProviderStatus::AuthError
             } else {
-                "error"
+                ProviderStatus::Error
             };
-            return UsagePayload::error(status, &e);
+            return UsagePayload::single(ProviderPayload::claude_error(status, &e));
         }
     };
 
@@ -42,7 +42,12 @@ async fn fetch_usage_payload(token_cache: &TokenCache, payload_cache: &PayloadCa
         .await
     {
         Ok(r) => r,
-        Err(e) => return UsagePayload::error("error", &format!("Request failed: {}", e)),
+        Err(e) => {
+            return UsagePayload::single(ProviderPayload::claude_error(
+                ProviderStatus::Error,
+                &format!("Request failed: {}", e),
+            ))
+        }
     };
 
     let status = response.status().as_u16();
@@ -53,15 +58,21 @@ async fn fetch_usage_payload(token_cache: &TokenCache, payload_cache: &PayloadCa
         .and_then(|v| v.parse::<u64>().ok());
     let body = match response.text().await {
         Ok(b) => b,
-        Err(e) => return UsagePayload::error("error", &format!("Failed to read response: {}", e)),
+        Err(e) => {
+            return UsagePayload::single(ProviderPayload::claude_error(
+                ProviderStatus::Error,
+                &format!("Failed to read response: {}", e),
+            ))
+        }
     };
 
-    let payload = parser::classify(status, retry_after, &body);
+    let provider = parser::classify(status, retry_after, &body);
 
-    if payload.status == "unauthorized" {
+    if provider.status == ProviderStatus::AuthError {
         token_cache.invalidate();
     }
-    if payload.status == "ok" {
+    let payload = UsagePayload::single(provider);
+    if payload.providers[0].status == ProviderStatus::Ok {
         payload_cache.store(payload.clone());
     }
 
@@ -71,11 +82,16 @@ async fn fetch_usage_payload(token_cache: &TokenCache, payload_cache: &PayloadCa
 // --- Refresh cycle ---
 
 fn update_tray_icon(app: &AppHandle, payload: &UsagePayload) {
-    if payload.status != "ok" {
+    // The tray shows the first (Claude) provider only — multi-provider tray
+    // layout is a separate change.
+    let Some(claude) = payload.providers.first() else {
+        return;
+    };
+    if claude.status != ProviderStatus::Ok {
         return;
     }
-    let session = payload.session_percent as f64 / 100.0;
-    let weekly = payload.weekly_percent as f64 / 100.0;
+    let session = claude.session_percent as f64 / 100.0;
+    let weekly = claude.weekly_percent as f64 / 100.0;
     let icon = crate::tray_icon::generate_icon(session, weekly);
     if let Some(tray) = app.tray_by_id("main-tray") {
         let _ = tray.set_icon(Some(icon));

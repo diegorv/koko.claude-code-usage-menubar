@@ -1,19 +1,50 @@
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsagePayload {
-    pub status: String,
+    pub providers: Vec<ProviderPayload>,
+    pub last_updated_at: u64,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderPayload {
+    pub id: String,
+    pub title: String,
+    pub status: ProviderStatus,
     pub session_percent: u32,
     pub session_resets_at: Option<String>,
     pub weekly_percent: u32,
     pub weekly_resets_at: Option<String>,
     pub models: Vec<ModelPayload>,
-    pub extra_usage_enabled: bool,
-    pub extra_usage_percent: u32,
-    pub last_updated_at: u64,
+    pub extra: ProviderExtra,
     pub error_message: Option<String>,
     /// Set when the response parsed but didn't look the way we expect, so a
     /// silent shape change surfaces instead of just rendering less data.
     pub shape_warning: Option<String>,
+}
+
+/// `Error` is the catch-all for failures that are neither auth nor rate-limit
+/// (5xx, network, invalid JSON) — those paths predate the providers[] shape
+/// and keep their existing messages. `Disabled` is reserved for providers with
+/// no credentials configured; Claude never emits it today.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderStatus {
+    Ok,
+    AuthError,
+    RateLimited,
+    // Constructed once a second provider can be configured-but-keyless (issue 03).
+    #[allow(dead_code)]
+    Disabled,
+    Error,
+}
+
+/// Provider-specific metrics, tagged so the frontend can narrow by `kind`.
+/// Claude reports Extra Usage; other providers add their own variants.
+#[derive(Clone, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ProviderExtra {
+    ExtraUsage { enabled: bool, percent: u32 },
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -24,18 +55,34 @@ pub struct ModelPayload {
     pub resets_at: Option<String>,
 }
 
+const CLAUDE_ID: &str = "claude";
+const CLAUDE_TITLE: &str = "Claude Usage";
+
 impl UsagePayload {
-    pub(crate) fn error(status: &str, message: &str) -> Self {
+    /// Wraps a single provider's result into the payload sent to the frontend.
+    pub fn single(provider: ProviderPayload) -> Self {
         Self {
-            status: status.to_string(),
+            providers: vec![provider],
+            last_updated_at: now_millis(),
+        }
+    }
+}
+
+impl ProviderPayload {
+    pub(crate) fn claude_error(status: ProviderStatus, message: &str) -> Self {
+        Self {
+            id: CLAUDE_ID.to_string(),
+            title: CLAUDE_TITLE.to_string(),
+            status,
             session_percent: 0,
             session_resets_at: None,
             weekly_percent: 0,
             weekly_resets_at: None,
             models: vec![],
-            extra_usage_enabled: false,
-            extra_usage_percent: 0,
-            last_updated_at: now_millis(),
+            extra: ProviderExtra::ExtraUsage {
+                enabled: false,
+                percent: 0,
+            },
             error_message: Some(message.to_string()),
             shape_warning: None,
         }
@@ -49,14 +96,14 @@ fn now_millis() -> u64 {
         .as_millis() as u64
 }
 
-/// Pure translation from an HTTP response to a `UsagePayload`. Has no side
-/// effects — callers handle cache invalidation / persistence based on the
+/// Pure translation from an HTTP response to a Claude `ProviderPayload`. Has no
+/// side effects — callers handle cache invalidation / persistence based on the
 /// returned `status`.
-pub fn classify(status: u16, retry_after: Option<u64>, body: &str) -> UsagePayload {
+pub fn classify(status: u16, retry_after: Option<u64>, body: &str) -> ProviderPayload {
     match status {
         200..=299 => parse_success_body(body),
-        401 | 403 => UsagePayload::error(
-            "unauthorized",
+        401 | 403 => ProviderPayload::claude_error(
+            ProviderStatus::AuthError,
             "Token expired. Run \"claude login\" to re-authenticate.",
         ),
         429 => {
@@ -64,20 +111,26 @@ pub fn classify(status: u16, retry_after: Option<u64>, body: &str) -> UsagePaylo
                 Some(secs) => format!("Rate limited. Try again in {}s.", secs),
                 None => "Rate limited. Please try again later.".to_string(),
             };
-            UsagePayload::error("error", &msg)
+            ProviderPayload::claude_error(ProviderStatus::RateLimited, &msg)
         }
-        s => UsagePayload::error("error", &format!("HTTP {}: {}", s, body)),
+        s => ProviderPayload::claude_error(
+            ProviderStatus::Error,
+            &format!("HTTP {}: {}", s, body),
+        ),
     }
 }
 
-fn parse_success_body(body: &str) -> UsagePayload {
+fn parse_success_body(body: &str) -> ProviderPayload {
     match serde_json::from_str::<serde_json::Value>(body) {
         Ok(json) => parse_api_response(&json),
-        Err(e) => UsagePayload::error("error", &format!("Invalid JSON: {}", e)),
+        Err(e) => ProviderPayload::claude_error(
+            ProviderStatus::Error,
+            &format!("Invalid JSON: {}", e),
+        ),
     }
 }
 
-pub(crate) fn parse_api_response(json: &serde_json::Value) -> UsagePayload {
+pub(crate) fn parse_api_response(json: &serde_json::Value) -> ProviderPayload {
     let clamp = |v: f64| v.max(0.0).min(100.0).round() as u32;
 
     // `limits` has been present in every observed response. Its absence means
@@ -111,8 +164,10 @@ pub(crate) fn parse_api_response(json: &serde_json::Value) -> UsagePayload {
         })
         .unwrap_or_default();
 
-    UsagePayload {
-        status: "ok".to_string(),
+    ProviderPayload {
+        id: CLAUDE_ID.to_string(),
+        title: CLAUDE_TITLE.to_string(),
+        status: ProviderStatus::Ok,
         session_percent: clamp(json["five_hour"]["utilization"].as_f64().unwrap_or(0.0)),
         session_resets_at: json["five_hour"]["resets_at"]
             .as_str()
@@ -122,11 +177,12 @@ pub(crate) fn parse_api_response(json: &serde_json::Value) -> UsagePayload {
             .as_str()
             .map(String::from),
         models,
-        extra_usage_enabled: json["extra_usage"]["is_enabled"]
-            .as_bool()
-            .unwrap_or(false),
-        extra_usage_percent: clamp(json["extra_usage"]["utilization"].as_f64().unwrap_or(0.0)),
-        last_updated_at: now_millis(),
+        extra: ProviderExtra::ExtraUsage {
+            enabled: json["extra_usage"]["is_enabled"]
+                .as_bool()
+                .unwrap_or(false),
+            percent: clamp(json["extra_usage"]["utilization"].as_f64().unwrap_or(0.0)),
+        },
         error_message: None,
         shape_warning,
     }
@@ -155,7 +211,7 @@ mod tests {
     fn parse_api_response_ok() {
         let json: serde_json::Value = serde_json::from_str(OK_BODY).unwrap();
         let payload = parse_api_response(&json);
-        assert_eq!(payload.status, "ok");
+        assert_eq!(payload.status, ProviderStatus::Ok);
         assert_eq!(payload.session_percent, 45);
         assert_eq!(payload.weekly_percent, 67);
         assert_eq!(payload.models.len(), 2);
@@ -224,7 +280,7 @@ mod tests {
     fn parses_captured_live_response() {
         let payload = classify(200, None, REAL_SHAPE_BODY);
 
-        assert_eq!(payload.status, "ok");
+        assert_eq!(payload.status, ProviderStatus::Ok);
         assert_eq!(payload.session_percent, 45);
         assert_eq!(payload.weekly_percent, 67);
 
@@ -235,8 +291,13 @@ mod tests {
         assert_eq!(payload.models[0].percent, 30);
         assert!(payload.models[0].resets_at.is_some());
 
-        assert!(!payload.extra_usage_enabled);
-        assert_eq!(payload.extra_usage_percent, 0);
+        assert!(matches!(
+            payload.extra,
+            ProviderExtra::ExtraUsage {
+                enabled: false,
+                percent: 0
+            }
+        ));
     }
 
     #[test]
@@ -285,27 +346,27 @@ mod tests {
     #[test]
     fn classify_200_returns_ok() {
         let payload = classify(200, None, OK_BODY);
-        assert_eq!(payload.status, "ok");
+        assert_eq!(payload.status, ProviderStatus::Ok);
         assert_eq!(payload.session_percent, 45);
     }
 
     #[test]
-    fn classify_401_returns_unauthorized() {
+    fn classify_401_returns_auth_error() {
         let payload = classify(401, None, "");
-        assert_eq!(payload.status, "unauthorized");
+        assert_eq!(payload.status, ProviderStatus::AuthError);
         assert!(payload.error_message.unwrap().contains("Token expired"));
     }
 
     #[test]
-    fn classify_403_returns_unauthorized() {
+    fn classify_403_returns_auth_error() {
         let payload = classify(403, None, "");
-        assert_eq!(payload.status, "unauthorized");
+        assert_eq!(payload.status, ProviderStatus::AuthError);
     }
 
     #[test]
     fn classify_429_without_retry_after() {
         let payload = classify(429, None, "");
-        assert_eq!(payload.status, "error");
+        assert_eq!(payload.status, ProviderStatus::RateLimited);
         assert!(payload.error_message.unwrap().contains("later"));
     }
 
@@ -334,14 +395,14 @@ mod tests {
     #[test]
     fn classify_200_with_invalid_json_returns_error() {
         let payload = classify(200, None, "not json");
-        assert_eq!(payload.status, "error");
+        assert_eq!(payload.status, ProviderStatus::Error);
         assert!(payload.error_message.unwrap().contains("Invalid JSON"));
     }
 
     #[test]
     fn classify_200_with_empty_body_returns_error() {
         let payload = classify(200, None, "");
-        assert_eq!(payload.status, "error");
+        assert_eq!(payload.status, ProviderStatus::Error);
         assert!(payload.error_message.unwrap().contains("Invalid JSON"));
     }
 
@@ -356,8 +417,13 @@ mod tests {
         )
         .unwrap();
         let payload = parse_api_response(&json);
-        assert!(payload.extra_usage_enabled);
-        assert_eq!(payload.extra_usage_percent, 42);
+        assert!(matches!(
+            payload.extra,
+            ProviderExtra::ExtraUsage {
+                enabled: true,
+                percent: 42
+            }
+        ));
     }
 
     #[test]
@@ -371,8 +437,13 @@ mod tests {
         )
         .unwrap();
         let payload = parse_api_response(&json);
-        assert!(!payload.extra_usage_enabled);
-        assert_eq!(payload.extra_usage_percent, 0);
+        assert!(matches!(
+            payload.extra,
+            ProviderExtra::ExtraUsage {
+                enabled: false,
+                percent: 0
+            }
+        ));
     }
 
     #[test]
@@ -382,7 +453,65 @@ mod tests {
         )
         .unwrap();
         let payload = parse_api_response(&json);
-        assert!(!payload.extra_usage_enabled);
-        assert_eq!(payload.extra_usage_percent, 0);
+        assert!(matches!(
+            payload.extra,
+            ProviderExtra::ExtraUsage {
+                enabled: false,
+                percent: 0
+            }
+        ));
+    }
+
+    #[test]
+    fn single_provider_assembly_wraps_one_provider() {
+        let payload = UsagePayload::single(classify(200, None, OK_BODY));
+        assert_eq!(payload.providers.len(), 1);
+        assert_eq!(payload.providers[0].id, "claude");
+        assert!(payload.last_updated_at > 0);
+    }
+
+    #[test]
+    fn provider_status_serializes_snake_case() {
+        let cases = [
+            (ProviderStatus::Ok, "ok"),
+            (ProviderStatus::AuthError, "auth_error"),
+            (ProviderStatus::RateLimited, "rate_limited"),
+            (ProviderStatus::Disabled, "disabled"),
+            (ProviderStatus::Error, "error"),
+        ];
+        for (status, expected) in cases {
+            assert_eq!(serde_json::to_value(status).unwrap(), expected);
+        }
+    }
+
+    /// Pins the wire format the frontend consumes: camelCase keys, provider
+    /// identity, tagged `extra`, top-level `lastUpdatedAt`.
+    #[test]
+    fn serialized_payload_has_expected_shape() {
+        let payload = UsagePayload::single(classify(200, None, OK_BODY));
+        let value = serde_json::to_value(&payload).unwrap();
+
+        assert!(value.get("lastUpdatedAt").is_some());
+        let providers = value["providers"].as_array().unwrap();
+        assert_eq!(providers.len(), 1);
+
+        let provider = &providers[0];
+        assert_eq!(provider["id"], "claude");
+        assert_eq!(provider["title"], "Claude Usage");
+        assert_eq!(provider["status"], "ok");
+        assert_eq!(provider["sessionPercent"], 45);
+        assert_eq!(provider["weeklyPercent"], 67);
+        assert_eq!(
+            provider["sessionResetsAt"],
+            "2024-01-01T00:00:00Z"
+        );
+        assert_eq!(provider["models"][0]["name"], "Sonnet");
+        assert_eq!(provider["models"][0]["resetsAt"], serde_json::Value::Null);
+        assert_eq!(
+            provider["extra"],
+            serde_json::json!({"kind": "extra_usage", "enabled": false, "percent": 0})
+        );
+        assert_eq!(provider["errorMessage"], serde_json::Value::Null);
+        assert_eq!(provider["shapeWarning"], serde_json::Value::Null);
     }
 }

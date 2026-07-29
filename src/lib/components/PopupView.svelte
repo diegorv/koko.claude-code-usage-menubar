@@ -153,85 +153,92 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <div class="popup-container">
-	<header>
-		<h1>Claude Usage</h1>
-		{#if usage?.lastUpdatedAt}
-			<span class="timestamp">
-				{new Date(usage.lastUpdatedAt).toLocaleTimeString()}
-			</span>
-		{/if}
-	</header>
-
 	{#if !usage}
 		<p class="loading">Loading...</p>
-	{:else if usage.status !== 'ok'}
-		<div class="error">{usage.errorMessage}</div>
 	{:else}
-		{#if usage.shapeWarning}
-			<div class="shape-warning">{usage.shapeWarning}</div>
-		{/if}
-
-		<section class="usage-section">
-			<div class="usage-row">
-				<div class="usage-label">
-					<span>Session (5h)</span>
-					<span class="percent">{usage.sessionPercent}%</span>
-				</div>
-				<ProgressBar percent={usage.sessionPercent} color={barColor(usage.sessionPercent, '#6b7fe0')} />
-				{#if usage.sessionResetsAt}
-					<span class="reset-time">
-						Resets in {formatTimeRemaining(usage.sessionResetsAt)}
+		{#each usage.providers as provider (provider.id)}
+			<header>
+				<h1>{provider.title}</h1>
+				{#if usage.lastUpdatedAt}
+					<span class="timestamp">
+						{new Date(usage.lastUpdatedAt).toLocaleTimeString()}
 					</span>
 				{/if}
-			</div>
+			</header>
 
-			<div class="usage-row">
-				<div class="usage-label">
-					<span>Weekly</span>
-					<span class="percent">{usage.weeklyPercent}%</span>
-				</div>
-				<ProgressBar percent={usage.weeklyPercent} color={barColor(usage.weeklyPercent, '#c060d0')} />
-				{#if usage.weeklyResetsAt}
-					<span class="reset-time">
-						Resets in {formatTimeRemaining(usage.weeklyResetsAt)}
-					</span>
+			{#if provider.status === 'ok'}
+				{#if provider.shapeWarning}
+					<div class="shape-warning">{provider.shapeWarning}</div>
 				{/if}
-			</div>
 
-			<div class="usage-row">
-				<div class="usage-label">
-					<span>Extra Usage</span>
-					{#if usage.extraUsageEnabled}
-						<span class="percent">{usage.extraUsagePercent}%</span>
-					{:else}
-						<span class="disabled-label">Disabled</span>
-					{/if}
-				</div>
-				{#if usage.extraUsageEnabled}
-					<ProgressBar percent={usage.extraUsagePercent} color={barColor(usage.extraUsagePercent, '#4db6a0')} />
-				{/if}
-			</div>
-		</section>
-
-		{#if usage.models.length > 0}
-			<section class="models-section">
-				<h2>Models</h2>
-				{#each usage.models as model}
+				<section class="usage-section">
 					<div class="usage-row">
 						<div class="usage-label">
-							<span>{model.name}</span>
-							<span class="percent">{model.percent}%</span>
+							<span>Session (5h)</span>
+							<span class="percent">{provider.sessionPercent}%</span>
 						</div>
-						<ProgressBar percent={model.percent} color={barColor(model.percent, '#3fa0c9')} />
-						{#if model.resetsAt}
+						<ProgressBar percent={provider.sessionPercent} color={barColor(provider.sessionPercent, '#6b7fe0')} />
+						{#if provider.sessionResetsAt}
 							<span class="reset-time">
-								Resets in {formatTimeRemaining(model.resetsAt)}
+								Resets in {formatTimeRemaining(provider.sessionResetsAt)}
 							</span>
 						{/if}
 					</div>
-				{/each}
-			</section>
-		{/if}
+
+					<div class="usage-row">
+						<div class="usage-label">
+							<span>Weekly</span>
+							<span class="percent">{provider.weeklyPercent}%</span>
+						</div>
+						<ProgressBar percent={provider.weeklyPercent} color={barColor(provider.weeklyPercent, '#c060d0')} />
+						{#if provider.weeklyResetsAt}
+							<span class="reset-time">
+								Resets in {formatTimeRemaining(provider.weeklyResetsAt)}
+							</span>
+						{/if}
+					</div>
+
+					{#if provider.extra.kind === 'extra_usage'}
+						{@const extra = provider.extra}
+						<div class="usage-row">
+							<div class="usage-label">
+								<span>Extra Usage</span>
+								{#if extra.enabled}
+									<span class="percent">{extra.percent}%</span>
+								{:else}
+									<span class="disabled-label">Disabled</span>
+								{/if}
+							</div>
+							{#if extra.enabled}
+								<ProgressBar percent={extra.percent} color={barColor(extra.percent, '#4db6a0')} />
+							{/if}
+						</div>
+					{/if}
+				</section>
+
+				{#if provider.models.length > 0}
+					<section class="models-section">
+						<h2>Models</h2>
+						{#each provider.models as model}
+							<div class="usage-row">
+								<div class="usage-label">
+									<span>{model.name}</span>
+									<span class="percent">{model.percent}%</span>
+								</div>
+								<ProgressBar percent={model.percent} color={barColor(model.percent, '#3fa0c9')} />
+								{#if model.resetsAt}
+									<span class="reset-time">
+										Resets in {formatTimeRemaining(model.resetsAt)}
+									</span>
+								{/if}
+							</div>
+						{/each}
+					</section>
+				{/if}
+			{:else if provider.status !== 'disabled'}
+				<div class="error">{provider.errorMessage}</div>
+			{/if}
+		{/each}
 	{/if}
 
 	<footer>

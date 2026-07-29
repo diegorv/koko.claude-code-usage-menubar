@@ -4,18 +4,29 @@ export interface ModelUsage {
 	resetsAt?: string;
 }
 
-export interface UsageData {
-	status: 'ok' | 'error' | 'unauthorized' | 'missing_credentials';
+export type ProviderStatus = 'ok' | 'auth_error' | 'rate_limited' | 'disabled' | 'error';
+
+// Provider-specific metrics, narrowed by `kind`. Claude reports Extra Usage;
+// other providers add their own variants (e.g. Kimi parallel sessions).
+export type ProviderExtra = { kind: 'extra_usage'; enabled: boolean; percent: number };
+
+export interface ProviderUsage {
+	id: string;
+	title: string;
+	status: ProviderStatus;
 	sessionPercent: number;
 	sessionResetsAt?: string;
 	weeklyPercent: number;
 	weeklyResetsAt?: string;
 	models: ModelUsage[];
-	extraUsageEnabled: boolean;
-	extraUsagePercent: number;
-	lastUpdatedAt: number;
+	extra: ProviderExtra;
 	errorMessage?: string;
 	shapeWarning?: string;
+}
+
+export interface UsageData {
+	providers: ProviderUsage[];
+	lastUpdatedAt: number;
 }
 
 export const COLOR_WARNING = '#e0a030';

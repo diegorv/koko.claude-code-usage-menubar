@@ -48,21 +48,10 @@ impl PayloadCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parser::{ProviderPayload, ProviderStatus};
 
-    fn payload(status: &str) -> UsagePayload {
-        UsagePayload {
-            status: status.to_string(),
-            session_percent: 10,
-            session_resets_at: None,
-            weekly_percent: 20,
-            weekly_resets_at: None,
-            models: vec![],
-            extra_usage_enabled: false,
-            extra_usage_percent: 0,
-            last_updated_at: 0,
-            error_message: None,
-            shape_warning: None,
-        }
+    fn payload(status: ProviderStatus) -> UsagePayload {
+        UsagePayload::single(ProviderPayload::claude_error(status, "marker"))
     }
 
     #[test]
@@ -75,16 +64,16 @@ mod tests {
     fn cached_if_fresh_returns_payload_within_ttl() {
         let cache = PayloadCache::new();
         cache.mark_fetch_start();
-        cache.store(payload("ok"));
+        cache.store(payload(ProviderStatus::Ok));
         let got = cache.cached_if_fresh(30).expect("expected cached payload");
-        assert_eq!(got.status, "ok");
+        assert_eq!(got.providers[0].status, ProviderStatus::Ok);
     }
 
     #[test]
     fn cached_if_fresh_returns_none_after_ttl_expires() {
         let cache = PayloadCache::new();
         cache.mark_fetch_start();
-        cache.store(payload("ok"));
+        cache.store(payload(ProviderStatus::Ok));
         // ttl_secs = 0 → any positive elapsed time counts as expired.
         std::thread::sleep(std::time::Duration::from_millis(5));
         assert!(cache.cached_if_fresh(0).is_none());
@@ -93,9 +82,18 @@ mod tests {
     #[test]
     fn store_overwrites_previous() {
         let cache = PayloadCache::new();
-        cache.store(payload("first"));
-        cache.store(payload("second"));
-        assert_eq!(cache.get().unwrap().status, "second");
+        cache.store(UsagePayload::single(ProviderPayload::claude_error(
+            ProviderStatus::Error,
+            "first",
+        )));
+        cache.store(UsagePayload::single(ProviderPayload::claude_error(
+            ProviderStatus::Error,
+            "second",
+        )));
+        assert_eq!(
+            cache.get().unwrap().providers[0].error_message.as_deref(),
+            Some("second")
+        );
     }
 
     #[test]
