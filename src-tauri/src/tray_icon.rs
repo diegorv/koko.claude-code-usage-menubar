@@ -47,16 +47,24 @@ const BAR_TOTAL_WIDTH: u32 = NUM_SEGMENTS * (SEGMENT_WIDTH + SEGMENT_GAP) - SEGM
 
 // Grid layout: `<provider> <S cell> <W cell>`, one row per provider.
 const MARGIN: u32 = 1;
-// CHAR_ADVANCE is the digit advance; capitals are wider, so the two label
-// widths carry their own slack rather than deriving from it. Verified by
-// rendering: at 8pt each, "CS12%" ran together with no gap at all.
-const ROW_LABEL_WIDTH: u32 = 13; // 'C'/'K' glyph plus the gap before the first cell
-const BUCKET_LABEL_WIDTH: u32 = 13; // 'S'/'W' — 'W' is the widest glyph on the icon
-const CELL_WIDTH: u32 = BUCKET_LABEL_WIDTH + VALUE_WIDTH + BAR_GAP_FROM_TEXT + BAR_TOTAL_WIDTH;
+// CHAR_ADVANCE is the *digit* advance; capitals are wider and differ from each
+// other, so every label column is sized from its own glyph plus a shared gap.
+// One width for both bucket letters left 'W' touching its percentage while 'S'
+// had room to spare. Advances in design points, from `print_glyph_advances`:
+// S 7.56, W 11.77, C 8.74, K 7.65.
+const LABEL_GAP: u32 = 5;
+const SESSION_LABEL_WIDTH: u32 = 8 + LABEL_GAP;
+const WEEKLY_LABEL_WIDTH: u32 = 12 + LABEL_GAP;
+// Shared by 'C' and 'K', so sized for the wider of the two.
+const ROW_LABEL_WIDTH: u32 = 9 + LABEL_GAP - 1;
+const SESSION_CELL_WIDTH: u32 =
+    SESSION_LABEL_WIDTH + VALUE_WIDTH + BAR_GAP_FROM_TEXT + BAR_TOTAL_WIDTH;
+const WEEKLY_CELL_WIDTH: u32 =
+    WEEKLY_LABEL_WIDTH + VALUE_WIDTH + BAR_GAP_FROM_TEXT + BAR_TOTAL_WIDTH;
 const CELL_GAP: u32 = 6;
 const SESSION_CELL_X: u32 = MARGIN + ROW_LABEL_WIDTH;
-const WEEKLY_CELL_X: u32 = SESSION_CELL_X + CELL_WIDTH + CELL_GAP;
-const DESIGN_WIDTH: u32 = WEEKLY_CELL_X + CELL_WIDTH + MARGIN;
+const WEEKLY_CELL_X: u32 = SESSION_CELL_X + SESSION_CELL_WIDTH + CELL_GAP;
+const DESIGN_WIDTH: u32 = WEEKLY_CELL_X + WEEKLY_CELL_WIDTH + MARGIN;
 
 // Final pixel dimensions
 const ICON_WIDTH: u32 = DESIGN_WIDTH * SCALE;
@@ -195,17 +203,40 @@ fn draw_row(
     // Session keeps its own color in every row; weekly carries the provider's,
     // so the two buckets stay distinguishable while the row label identifies
     // the provider.
-    draw_cell(img, font, line_y, SESSION_CELL_X, 'S', session, COLOR_SESSION, text_color);
-    draw_cell(img, font, line_y, WEEKLY_CELL_X, 'W', weekly, color, text_color);
+    draw_cell(
+        img,
+        font,
+        line_y,
+        Cell { x: SESSION_CELL_X, label: 'S', label_width: SESSION_LABEL_WIDTH },
+        session,
+        COLOR_SESSION,
+        text_color,
+    );
+    draw_cell(
+        img,
+        font,
+        line_y,
+        Cell { x: WEEKLY_CELL_X, label: 'W', label_width: WEEKLY_LABEL_WIDTH },
+        weekly,
+        color,
+        text_color,
+    );
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Where a cell sits and how much room its label needs. The two columns differ:
+/// 'W' advances 4pt wider than 'S', and a shared width leaves one of them
+/// touching its percentage.
+struct Cell {
+    x: u32,
+    label: char,
+    label_width: u32,
+}
+
 fn draw_cell(
     img: &mut RgbaImage,
     font: &FontArc,
     line_y: u32,
-    cell_x: u32,
-    label: char,
+    cell: Cell,
     pct: f64,
     color: Rgba<u8>,
     text_color: Rgba<u8>,
@@ -216,14 +247,14 @@ fn draw_cell(
 
     // Draw label and value separately so percentages align vertically
     let text_y = (line_y * SCALE) as i32 + TEXT_Y_OFFSET;
-    let label_x = (cell_x * SCALE) as i32;
-    let value_x = ((cell_x + BUCKET_LABEL_WIDTH) * SCALE) as i32;
+    let label_x = (cell.x * SCALE) as i32;
+    let value_x = ((cell.x + cell.label_width) * SCALE) as i32;
 
-    draw_bold_text(img, font, label_x, text_y, text_color, &label.to_string());
+    draw_bold_text(img, font, label_x, text_y, text_color, &cell.label.to_string());
     draw_bold_text(img, font, value_x, text_y, text_color, &value_str);
 
     // Draw segmented bar
-    let bar_x = cell_x + BUCKET_LABEL_WIDTH + VALUE_WIDTH + BAR_GAP_FROM_TEXT;
+    let bar_x = cell.x + cell.label_width + VALUE_WIDTH + BAR_GAP_FROM_TEXT;
     let bar_y = line_y + (LINE_HEIGHT - SEGMENT_HEIGHT) / 2;
     let filled = filled_segments(clamped);
 
@@ -315,10 +346,10 @@ mod tests {
         // test_rows_fit_design_height, for the axis the grid actually grew on.
         // Both are const: a bad layout fails the build, not the test run.
         const LAST_BAR_END: u32 =
-            WEEKLY_CELL_X + BUCKET_LABEL_WIDTH + VALUE_WIDTH + BAR_GAP_FROM_TEXT + BAR_TOTAL_WIDTH;
+            WEEKLY_CELL_X + WEEKLY_LABEL_WIDTH + VALUE_WIDTH + BAR_GAP_FROM_TEXT + BAR_TOTAL_WIDTH;
         const { assert!(LAST_BAR_END <= DESIGN_WIDTH) };
         // And the two cells must not overlap.
-        const { assert!(SESSION_CELL_X + CELL_WIDTH <= WEEKLY_CELL_X) };
+        const { assert!(SESSION_CELL_X + SESSION_CELL_WIDTH <= WEEKLY_CELL_X) };
     }
 
     #[test]
@@ -352,9 +383,10 @@ mod tests {
         let icon = generate_icon(grid_rows(&[('C', 1.0, 1.0)]));
         let rgba = icon.rgba();
         let (top, bottom) = band_pixels(1, 0);
-        let bar_offset = BUCKET_LABEL_WIDTH + VALUE_WIDTH + BAR_GAP_FROM_TEXT;
-        for cell_x in [SESSION_CELL_X, WEEKLY_CELL_X] {
-            let bar_x = (cell_x + bar_offset) * SCALE;
+        for (cell_x, label_width) in
+            [(SESSION_CELL_X, SESSION_LABEL_WIDTH), (WEEKLY_CELL_X, WEEKLY_LABEL_WIDTH)]
+        {
+            let bar_x = (cell_x + label_width + VALUE_WIDTH + BAR_GAP_FROM_TEXT) * SCALE;
             assert!(region_painted(rgba, bar_x, bar_x + BAR_TOTAL_WIDTH * SCALE, top, bottom));
         }
     }
@@ -366,7 +398,7 @@ mod tests {
         let icon = generate_icon(grid_rows(&[('C', 0.0, 1.0)]));
         let rgba = icon.rgba();
         let (top, bottom) = band_pixels(1, 0);
-        let bar_x = (WEEKLY_CELL_X + BUCKET_LABEL_WIDTH + VALUE_WIDTH + BAR_GAP_FROM_TEXT) * SCALE;
+        let bar_x = (WEEKLY_CELL_X + WEEKLY_LABEL_WIDTH + VALUE_WIDTH + BAR_GAP_FROM_TEXT) * SCALE;
         assert!(region_painted(rgba, bar_x, bar_x + BAR_TOTAL_WIDTH * SCALE, top, bottom));
     }
 
@@ -375,6 +407,17 @@ mod tests {
     /// this module passes on a layout whose text overlaps.
     ///
     /// `ICON_DUMP_DIR=/tmp cargo test --lib dump_icon_png -- --ignored`
+    #[test]
+    #[ignore]
+    fn print_glyph_advances() {
+        use ab_glyph::{Font, ScaleFont};
+        let scaled = FONT.as_scaled(FONT_SIZE);
+        for c in ['S', 'W', 'C', 'K', '0', '1', '%'] {
+            let advance = scaled.h_advance(FONT.glyph_id(c));
+            println!("{c}: {advance:.2}px = {:.2}pt", advance / SCALE as f32);
+        }
+    }
+
     #[test]
     #[ignore]
     fn dump_icon_png() {

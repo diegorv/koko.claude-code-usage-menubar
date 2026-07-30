@@ -30,23 +30,40 @@ Metrics, in design points, alongside the constants they replace in
 | what | value | note |
 |---|---|---|
 | row label | 13 | `C`/`K` plus gap; new |
-| bucket label | 13 | `S`/`W`, one char, **no colon** — the colon bought nothing at this width |
+| session label | 13 | `S` (7.56pt) + `LABEL_GAP`; **no colon** — it bought nothing at this width |
+| weekly label | 17 | `W` (11.77pt) + `LABEL_GAP` |
+| label gap | 5 | new; the same gap after every label |
 | value | 32 | 4 chars, unchanged `VALUE_CHARS`; `100%` is the worst case |
 | bar gap | 3 | was 1 |
 | bar | 24 | 5 segments of 4pt with 1pt gaps; `NUM_SEGMENTS` drops 10 → 5 |
-| cell | 72 | `13 + 32 + 3 + 24` |
+| session cell | 72 | `13 + 32 + 3 + 24` |
+| weekly cell | 76 | `17 + 32 + 3 + 24` |
 | cell gap | 6 | new |
-| **design width** | **165** | `1 + 13 + 72 + 6 + 72 + 1`; before, 102 |
+| **design width** | **169** | `1 + 13 + 72 + 6 + 76 + 1`; before, 102 |
 
 `DESIGN_HEIGHT`, `LINE_HEIGHT`, `SCALE`, `FONT_SIZE`, `MAX_ROWS`: unchanged.
 
-The two label widths do **not** derive from `CHAR_ADVANCE`. That constant is the
-digit advance; capitals are wider, and at 8pt each the first render came out as
-`CS12%` and `W100%` with the glyphs touching. Nothing in the test module could
-catch that — every assertion passes on a layout whose text overlaps — so the
-widths were set by eye against a dumped PNG. `dump_icon_png` (an `#[ignore]`d test)
-is how that render is produced, and is the tool to reach for the next time these
-metrics move.
+No label width derives from `CHAR_ADVANCE`. That constant is the *digit* advance;
+capitals are wider and differ from each other, so each label column is sized from
+its own glyph plus the shared `LABEL_GAP`. Two rounds of guessing got this wrong —
+first at 8pt, where `CS12%` and `W100%` rendered with the glyphs touching, then at
+a single 13pt bucket width, which left `W` flush against its percentage while `S`
+had 5pt to spare. Nothing in the test module can catch either: every assertion
+passes on a layout whose text overlaps.
+
+Two `#[ignore]`d tests replace the guessing, and are what to reach for the next
+time these metrics move:
+
+- `print_glyph_advances` — the real advance of every glyph the icon draws, in the
+  font actually loaded. Source of the numbers in the table above.
+- `dump_icon_png` — writes the icon out for a human to look at.
+
+Each bucket letter owns its column, so per-column widths cost nothing in
+alignment: the `S` column is always `S`, the `W` column always `W`, and the
+percentages still line up down the icon. The row-label column is the one
+exception — it carries both `C` (8.74pt) and `K` (7.65pt), so the gap after it
+varies by ~1pt between rows. Sizing it per letter would shift the whole session
+column between rows, which is a worse trade.
 
 Bars lose half their resolution — 20% per segment instead of 10%. The number beside
 each bar stays exact, and the bar was always the glanceable indicator, not the
@@ -71,7 +88,7 @@ separates the two *buckets* — which is what it did in the original `S`/`W` lay
 
 ## One provider
 
-Width is fixed at 165 whether one provider is ok or two. A Claude-only install pays
+Width is fixed at 169 whether one provider is ok or two. A Claude-only install pays
 the full width and gets a single grid row, centred vertically at
 `line_y = (DESIGN_HEIGHT - LINE_HEIGHT) / 2 = 5`.
 
@@ -138,7 +155,7 @@ Rewrite, not extend — the row tuple changes shape, so every existing assertion
 - `a_nonzero_percentage_lights_a_segment` — the five-segment rounding floor.
 - `test_rows_fit_design_height` stays; `cells_fit_design_width` is its width twin,
   written as `const` assertions so a bad layout fails the build rather than a run.
-- `dump_icon_png`, `#[ignore]`d: renders the icon to PNG for a human to check.
+- `dump_icon_png` and `print_glyph_advances`, both `#[ignore]`d — see "The layout".
 
 ## Out of scope
 
