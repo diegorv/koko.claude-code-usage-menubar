@@ -75,11 +75,13 @@ const FONT_SIZE: f32 = 15.0 * SCALE as f32;
 // Vertical offset to compensate for font ascender space above cap-height glyphs
 const TEXT_Y_OFFSET: i32 = -3 * SCALE as i32;
 
-// Colors
-pub(crate) const COLOR_SESSION: Rgba<u8> = Rgba([107, 127, 224, 255]);
-pub(crate) const COLOR_WEEKLY: Rgba<u8> = Rgba([192, 96, 208, 255]);
+// Colors. Both bars in a row carry the provider's color: the row reads as one
+// provider at a glance, and 'S'/'W' is what tells the two buckets apart. A
+// per-bucket color instead meant a Claude bar and a Kimi bar could share a hue,
+// which is the distinction that actually matters in the menubar.
+pub(crate) const COLOR_CLAUDE: Rgba<u8> = Rgba([192, 96, 208, 255]);
 // Kimi's identity color in the two-provider layout — the teal the popup
-// already uses (#4db6a0), distinct from Claude's blue/purple and the warning
+// already uses (#4db6a0), distinct from Claude's purple and the warning
 // amber, and proven legible on light and dark surfaces.
 pub(crate) const COLOR_KIMI: Rgba<u8> = Rgba([77, 182, 160, 255]);
 const COLOR_SEGMENT_OFF: Rgba<u8> = Rgba([140, 140, 140, 80]);
@@ -200,16 +202,14 @@ fn draw_row(
     let text_y = (line_y * SCALE) as i32 + TEXT_Y_OFFSET;
     draw_bold_text(img, font, (MARGIN * SCALE) as i32, text_y, text_color, &label.to_string());
 
-    // Session keeps its own color in every row; weekly carries the provider's,
-    // so the two buckets stay distinguishable while the row label identifies
-    // the provider.
+    // Both cells carry the provider's color — see the COLOR_* block.
     draw_cell(
         img,
         font,
         line_y,
         Cell { x: SESSION_CELL_X, label: 'S', label_width: SESSION_LABEL_WIDTH },
         session,
-        COLOR_SESSION,
+        color,
         text_color,
     );
     draw_cell(
@@ -281,7 +281,7 @@ mod tests {
     fn grid_rows(pairs: &[(char, f64, f64)]) -> Vec<(char, f64, f64, Rgba<u8>)> {
         pairs
             .iter()
-            .map(|&(label, session, weekly)| (label, session, weekly, COLOR_WEEKLY))
+            .map(|&(label, session, weekly)| (label, session, weekly, COLOR_CLAUDE))
             .collect()
     }
 
@@ -392,6 +392,24 @@ mod tests {
     }
 
     #[test]
+    fn both_bars_in_a_row_carry_the_provider_color() {
+        // The whole point of the provider color: a row is one hue, so two
+        // providers never share one. Sampled below the warning threshold, where
+        // the identity color is what bar_color returns.
+        let icon = generate_icon(vec![('K', 0.2, 0.2, COLOR_KIMI)]);
+        let rgba = icon.rgba();
+        let (top, _) = band_pixels(1, 0);
+        let y = top + (SEGMENT_HEIGHT * SCALE / 2) as usize;
+        for (cell_x, label_width) in
+            [(SESSION_CELL_X, SESSION_LABEL_WIDTH), (WEEKLY_CELL_X, WEEKLY_LABEL_WIDTH)]
+        {
+            let x = ((cell_x + label_width + VALUE_WIDTH + BAR_GAP_FROM_TEXT) * SCALE + 1) as usize;
+            let i = (y * ICON_WIDTH as usize + x) * 4;
+            assert_eq!(&rgba[i..i + 4], &COLOR_KIMI.0[..]);
+        }
+    }
+
+    #[test]
     fn an_empty_session_leaves_the_weekly_bar_alone() {
         // The two cells are independent: a 0% session must not blank the
         // weekly bar beside it.
@@ -423,8 +441,8 @@ mod tests {
     fn dump_icon_png() {
         let dir = std::env::var("ICON_DUMP_DIR").unwrap();
         for (name, rows) in [
-            ("two", vec![('C', 0.12, 0.45, COLOR_WEEKLY), ('K', 0.30, 1.0, COLOR_KIMI)]),
-            ("one", vec![('C', 0.07, 0.96, COLOR_WEEKLY)]),
+            ("two", vec![('C', 0.12, 0.45, COLOR_CLAUDE), ('K', 0.30, 1.0, COLOR_KIMI)]),
+            ("one", vec![('C', 0.07, 0.96, COLOR_CLAUDE)]),
         ] {
             let icon = generate_icon(rows);
             let img = RgbaImage::from_raw(ICON_WIDTH, ICON_HEIGHT, icon.rgba().to_vec()).unwrap();
@@ -434,15 +452,15 @@ mod tests {
 
     #[test]
     fn bar_color_keeps_identity_below_warning() {
-        assert_eq!(bar_color(0, COLOR_SESSION), COLOR_SESSION);
-        assert_eq!(bar_color(79, COLOR_SESSION), COLOR_SESSION);
-        assert_eq!(bar_color(79, COLOR_WEEKLY), COLOR_WEEKLY);
+        assert_eq!(bar_color(0, COLOR_CLAUDE), COLOR_CLAUDE);
+        assert_eq!(bar_color(79, COLOR_CLAUDE), COLOR_CLAUDE);
+        assert_eq!(bar_color(79, COLOR_KIMI), COLOR_KIMI);
     }
 
     #[test]
     fn bar_color_warns_at_threshold() {
-        assert_eq!(bar_color(80, COLOR_SESSION), COLOR_WARNING);
-        assert_eq!(bar_color(94, COLOR_WEEKLY), COLOR_WARNING);
+        assert_eq!(bar_color(80, COLOR_CLAUDE), COLOR_WARNING);
+        assert_eq!(bar_color(94, COLOR_KIMI), COLOR_WARNING);
     }
 
     #[test]
@@ -456,7 +474,7 @@ mod tests {
 
     #[test]
     fn bar_color_criticals_at_threshold() {
-        assert_eq!(bar_color(95, COLOR_SESSION), COLOR_CRITICAL);
-        assert_eq!(bar_color(100, COLOR_WEEKLY), COLOR_CRITICAL);
+        assert_eq!(bar_color(95, COLOR_CLAUDE), COLOR_CRITICAL);
+        assert_eq!(bar_color(100, COLOR_KIMI), COLOR_CRITICAL);
     }
 }

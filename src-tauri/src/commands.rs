@@ -182,7 +182,7 @@ async fn fetch_kimi_provider() -> Option<ProviderPayload> {
 fn tray_identity(id: &str) -> (char, Rgba<u8>, &'static str) {
     match id {
         "kimi" => ('K', crate::tray_icon::COLOR_KIMI, "Kimi"),
-        _ => ('C', crate::tray_icon::COLOR_WEEKLY, "Claude"),
+        _ => ('C', crate::tray_icon::COLOR_CLAUDE, "Claude"),
     }
 }
 
@@ -385,7 +385,7 @@ mod tests {
         assert_eq!(rows[0].0, 'C');
         assert_eq!(rows[0].1, 45.0 / 100.0);
         assert_eq!(rows[0].2, 67.0 / 100.0);
-        assert_eq!(rows[0].3, crate::tray_icon::COLOR_WEEKLY);
+        assert_eq!(rows[0].3, crate::tray_icon::COLOR_CLAUDE);
     }
 
     #[test]
@@ -404,8 +404,8 @@ mod tests {
         assert_eq!(rows[1].0, 'K');
         assert_eq!(rows[1].1, 96.0 / 100.0);
         assert_eq!(rows[1].2, 19.0 / 100.0);
-        // Distinct per-provider colors; Claude keeps today's weekly color.
-        assert_eq!(rows[0].3, crate::tray_icon::COLOR_WEEKLY);
+        // Distinct per-provider colors — the whole row is painted in one.
+        assert_eq!(rows[0].3, crate::tray_icon::COLOR_CLAUDE);
         assert_eq!(rows[1].3, crate::tray_icon::COLOR_KIMI);
         assert_ne!(rows[0].3, rows[1].3);
     }
@@ -431,7 +431,7 @@ mod tests {
         assert_eq!(rows[0].0, 'C');
         assert_eq!(rows[0].1, 45.0 / 100.0);
         assert_eq!(rows[0].2, 67.0 / 100.0);
-        assert_eq!(rows[0].3, crate::tray_icon::COLOR_WEEKLY);
+        assert_eq!(rows[0].3, crate::tray_icon::COLOR_CLAUDE);
     }
 
     #[test]
