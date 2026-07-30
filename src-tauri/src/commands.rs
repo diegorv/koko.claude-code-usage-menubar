@@ -335,13 +335,16 @@ pub async fn delete_kimi_key(app: AppHandle) -> Result<(), String> {
 }
 
 /// Whether a Kimi API key is stored. The key itself never crosses the IPC
-/// boundary — booleans only. Keychain infrastructure errors (e.g. a timed-out
-/// `security` call) read as "no key" so the indicator never throws.
+/// boundary — booleans only.
+///
+/// A keychain infrastructure failure (a timed-out `security` call, a denied
+/// authorization) is an `Err`, not a `false`. Collapsing the two told the
+/// user "Not saved" about a key that was sitting in the keychain the whole
+/// time, and the obvious next move — paste it again — is the one thing that
+/// cannot help.
 #[tauri::command]
-pub async fn has_kimi_key() -> bool {
-    on_keychain_thread(|| crate::state::kimi_key::exists().unwrap_or(false))
-        .await
-        .unwrap_or(false)
+pub async fn has_kimi_key() -> Result<bool, String> {
+    on_keychain_thread(crate::state::kimi_key::exists).await?
 }
 
 #[cfg(test)]

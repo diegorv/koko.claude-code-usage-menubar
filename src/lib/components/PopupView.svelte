@@ -22,10 +22,23 @@
 	let selectedInterval = $state(120);
 
 	let settingsOpen = $state(false);
-	let hasKimiKey = $state(false);
+	// Three states, not two: a keychain that won't answer is not the same as
+	// a key that isn't there, and telling the user "Not saved" about a stored
+	// key sends them to paste it again — the one action that cannot help.
+	let keyStatus = $state<'saved' | 'none' | 'unknown'>('none');
 	let kimiKeyInput = $state('');
 	let kimiKeyBusy = $state(false);
 	let kimiKeyError = $state('');
+
+	const keyStatusLabel = { saved: 'Saved', none: 'Not saved', unknown: 'Unknown' };
+
+	async function refreshKeyStatus() {
+		try {
+			keyStatus = (await invoke<boolean>('has_kimi_key')) ? 'saved' : 'none';
+		} catch {
+			keyStatus = 'unknown';
+		}
+	}
 
 	async function toggleSettings() {
 		settingsOpen = !settingsOpen;
@@ -35,11 +48,7 @@
 			kimiKeyInput = '';
 			return;
 		}
-		try {
-			hasKimiKey = await invoke<boolean>('has_kimi_key');
-		} catch {
-			hasKimiKey = false;
-		}
+		await refreshKeyStatus();
 	}
 
 	async function handleSaveKimiKey() {
@@ -49,7 +58,7 @@
 		kimiKeyError = '';
 		try {
 			await invoke('save_kimi_key', { key });
-			hasKimiKey = true;
+			keyStatus = 'saved';
 			kimiKeyInput = '';
 		} catch (e) {
 			kimiKeyError = String(e);
@@ -64,7 +73,7 @@
 		kimiKeyError = '';
 		try {
 			await invoke('delete_kimi_key');
-			hasKimiKey = false;
+			keyStatus = 'none';
 		} catch (e) {
 			kimiKeyError = String(e);
 		} finally {
@@ -119,6 +128,7 @@
 		void usage;
 		void settingsOpen;
 		void kimiKeyError;
+		void keyStatus;
 		fitWindowToContent();
 	});
 
@@ -257,10 +267,20 @@
 			<div class="settings-panel">
 				<div class="settings-header">
 					<span>Kimi API Key</span>
-					<span class="key-status" class:saved={hasKimiKey}>
-						{hasKimiKey ? 'Saved' : 'Not saved'}
+					<span
+						class="key-status"
+						class:saved={keyStatus === 'saved'}
+						class:unknown={keyStatus === 'unknown'}
+					>
+						{keyStatusLabel[keyStatus]}
 					</span>
 				</div>
+				{#if keyStatus === 'unknown'}
+					<span class="settings-hint">
+						The keychain didn't answer, so a stored key can't be confirmed.
+						Pasting again is safe — it replaces whatever is there.
+					</span>
+				{/if}
 				<input
 					type="password"
 					class="key-input"
@@ -281,7 +301,7 @@
 					<button
 						class="action-btn"
 						onclick={handleRemoveKimiKey}
-						disabled={kimiKeyBusy || !hasKimiKey}
+						disabled={kimiKeyBusy || keyStatus === 'none'}
 					>
 						Remove
 					</button>
@@ -478,6 +498,16 @@
 
 	.key-status.saved {
 		color: #34c759;
+	}
+
+	.key-status.unknown {
+		color: #e0a030;
+	}
+
+	.settings-hint {
+		font-size: 11px;
+		line-height: 1.4;
+		color: var(--text-secondary);
 	}
 
 	.key-input {
