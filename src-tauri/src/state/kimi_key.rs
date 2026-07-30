@@ -63,7 +63,19 @@ fn delete_args() -> Vec<String> {
     ]
 }
 
+/// No `-w`: the exit status alone answers "is it there", and `-w` would make
+/// `security` decrypt the secret and print it just to have it discarded.
 fn exists_args() -> Vec<String> {
+    vec![
+        "find-generic-password".to_string(),
+        "-s".to_string(),
+        SERVICE_NAME.to_string(),
+    ]
+}
+
+/// `-w` prints the secret — and only the secret — on stdout. Only `read` uses
+/// this, and only it pipes stdout.
+fn read_args() -> Vec<String> {
     vec![
         "find-generic-password".to_string(),
         "-s".to_string(),
@@ -124,7 +136,8 @@ fn remove_result(outcome: &SecurityOutcome) -> Result<(), String> {
     }
 }
 
-/// Whether a key is stored. Exit status only — the item's data is never read.
+/// Whether a key is stored. Exit status only — the item is matched but never
+/// decrypted, so this cannot expose the secret even to a nulled stdout.
 pub fn exists() -> Result<bool, String> {
     let outcome = run_security(&exists_args())?;
     Ok(outcome.success)
@@ -144,7 +157,7 @@ pub fn exists() -> Result<bool, String> {
 /// its ACL trusts that binary and reads never prompt. The floor exists for
 /// the Claude item, whose ACL belongs to another app's binary.
 pub fn read() -> Result<Option<String>, String> {
-    let outcome = run_security_capturing_stdout(&exists_args())?;
+    let outcome = run_security_capturing_stdout(&read_args())?;
     if !outcome.success {
         return Ok(None);
     }
@@ -334,9 +347,16 @@ mod tests {
     }
 
     #[test]
-    fn exists_args_read_only_the_service() {
+    fn exists_args_never_decrypt_the_secret() {
+        let args = exists_args();
+        assert_eq!(args, vec!["find-generic-password", "-s", "koko-kimi-api-key"]);
+        assert!(!args.iter().any(|a| a == "-w"), "exists must not ask for the password");
+    }
+
+    #[test]
+    fn read_args_ask_for_the_password() {
         assert_eq!(
-            exists_args(),
+            read_args(),
             vec!["find-generic-password", "-s", "koko-kimi-api-key", "-w"]
         );
     }
