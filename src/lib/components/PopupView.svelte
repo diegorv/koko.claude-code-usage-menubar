@@ -169,15 +169,19 @@
 	{#if !usage}
 		<p class="loading">Loading...</p>
 	{:else}
-		{#each usage.providers as provider (provider.id)}
+		<!-- One timestamp, outside the loop: lastUpdatedAt belongs to the fetch,
+		     not to a provider, and repeating it under every section implied each
+		     one had its own. -->
+		{#if usage.lastUpdatedAt}
 			<header>
-				<h1>{provider.title}</h1>
-				{#if usage.lastUpdatedAt}
-					<span class="timestamp">
-						{new Date(usage.lastUpdatedAt).toLocaleTimeString()}
-					</span>
-				{/if}
+				<span class="timestamp">
+					Updated {new Date(usage.lastUpdatedAt).toLocaleTimeString()}
+				</span>
 			</header>
+		{/if}
+
+		{#each usage.providers as provider (provider.id)}
+			<h2 class="provider-title">{provider.title}</h2>
 
 			{#if provider.status === 'ok'}
 				{#if provider.shapeWarning}
@@ -239,7 +243,7 @@
 
 				{#if provider.models.length > 0}
 					<section class="models-section">
-						<h2>Models</h2>
+						<h3>Models</h3>
 						{#each provider.models as model}
 							<div class="usage-row">
 								<div class="usage-label">
@@ -371,14 +375,19 @@
 	header {
 		display: flex;
 		align-items: baseline;
-		justify-content: space-between;
-		margin-bottom: 16px;
+		justify-content: flex-end;
+		margin-bottom: 10px;
 	}
 
-	h1 {
+	.provider-title {
 		font-size: 16px;
 		font-weight: 600;
-		margin: 0;
+		margin: 0 0 12px;
+	}
+
+	/* Sections after the first need air between them. */
+	.provider-title ~ .provider-title {
+		margin-top: 4px;
 	}
 
 	.timestamp {
@@ -411,7 +420,7 @@
 		margin-bottom: 16px;
 	}
 
-	.models-section h2 {
+	.models-section h3 {
 		font-size: 12px;
 		font-weight: 500;
 		color: var(--text-secondary);
