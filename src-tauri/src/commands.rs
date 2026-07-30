@@ -53,13 +53,21 @@ async fn fetch_usage_payload(app: &AppHandle) -> UsagePayload {
         fetch_kimi_provider()
     );
 
-    let claude_ok = claude.status == ProviderStatus::Ok;
     let mut providers = vec![claude];
     providers.extend(kimi);
     let payload = UsagePayload::new(providers);
-    if claude_ok {
-        payload_cache.store(payload.clone());
-    }
+
+    // Stored unconditionally. Keeping the last *ok* payload instead — which is
+    // what the single-provider version did — meant a failing Claude froze the
+    // whole cache, including a Kimi provider that had just answered fine: the
+    // popup opened on a payload that could be days old and said so only in a
+    // stale `lastUpdatedAt`, and a Kimi key removed while Claude was down went
+    // on being rendered from that frozen copy. The cache is now simply "what
+    // the last fetch produced", which is the only thing it can honestly claim.
+    //
+    // The tray still freezes on error — see `tray_rows` — because a tray icon
+    // is one baked image with no way to say "this is stale".
+    payload_cache.store(payload.clone());
 
     payload
 }
