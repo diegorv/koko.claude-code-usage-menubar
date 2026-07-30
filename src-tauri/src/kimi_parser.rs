@@ -3,7 +3,7 @@
 //! same shape_warning rationale (a silent reshape should surface, not render
 //! less data). Has no side effects; the fetch layer owns the keychain read.
 
-use crate::parser::{ModelPayload, ProviderExtra, ProviderPayload, ProviderStatus};
+use crate::parser::{truncate_body, ModelPayload, ProviderExtra, ProviderPayload, ProviderStatus};
 
 const KIMI_ID: &str = "kimi";
 const KIMI_TITLE: &str = "Kimi Usage";
@@ -30,7 +30,10 @@ pub fn classify(status: u16, retry_after: Option<u64>, body: &str) -> ProviderPa
             };
             error_payload(ProviderStatus::RateLimited, &msg)
         }
-        s => error_payload(ProviderStatus::Error, &format!("HTTP {}: {}", s, body)),
+        s => error_payload(
+            ProviderStatus::Error,
+            &format!("HTTP {}: {}", s, truncate_body(body)),
+        ),
     }
 }
 
@@ -354,6 +357,15 @@ mod tests {
         let msg = payload.error_message.unwrap();
         assert!(msg.contains("HTTP 503"));
         assert!(msg.contains("upstream down"));
+    }
+
+    #[test]
+    fn classify_truncates_a_long_error_body() {
+        let payload = classify(502, None, &"x".repeat(5_000));
+        let msg = payload.error_message.unwrap();
+        assert!(msg.contains("HTTP 502"));
+        assert!(msg.ends_with('…'));
+        assert!(msg.chars().count() < 250);
     }
 
     #[test]

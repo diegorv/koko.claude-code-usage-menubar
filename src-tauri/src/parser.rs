@@ -93,6 +93,24 @@ impl ProviderPayload {
     }
 }
 
+/// An unclassified HTTP failure puts the response body in `error_message`,
+/// which the popup renders verbatim and then sizes its window around. Bodies
+/// are usually a short JSON error, but a proxy or gateway answers with a full
+/// HTML page — enough to push the footer buttons off a popup that has no
+/// scrollbar. Keep enough to identify the failure and drop the rest.
+const MAX_ERROR_BODY_CHARS: usize = 200;
+
+pub(crate) fn truncate_body(body: &str) -> String {
+    let trimmed = body.trim();
+    // Counted in chars, not bytes: slicing a multi-byte body by byte index
+    // would panic.
+    if trimmed.chars().count() <= MAX_ERROR_BODY_CHARS {
+        return trimmed.to_string();
+    }
+    let head: String = trimmed.chars().take(MAX_ERROR_BODY_CHARS).collect();
+    format!("{}…", head)
+}
+
 fn now_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -119,7 +137,7 @@ pub fn classify(status: u16, retry_after: Option<u64>, body: &str) -> ProviderPa
         }
         s => ProviderPayload::claude_error(
             ProviderStatus::Error,
-            &format!("HTTP {}: {}", s, body),
+            &format!("HTTP {}: {}", s, truncate_body(body)),
         ),
     }
 }
@@ -386,6 +404,30 @@ mod tests {
         let msg = payload.error_message.unwrap();
         assert!(msg.contains("HTTP 503"));
         assert!(msg.contains("upstream down"));
+    }
+
+    #[test]
+    fn long_error_bodies_are_truncated() {
+        let html = format!("<html>{}</html>", "x".repeat(5_000));
+        let payload = classify(502, None, &html);
+        let msg = payload.error_message.unwrap();
+        assert!(msg.contains("HTTP 502"));
+        assert!(msg.ends_with('…'));
+        assert!(msg.chars().count() < 250, "still {} chars", msg.chars().count());
+    }
+
+    #[test]
+    fn truncating_a_multibyte_body_does_not_panic() {
+        // Slicing by byte index would split a character here.
+        let body = "é".repeat(5_000);
+        let truncated = truncate_body(&body);
+        assert!(truncated.ends_with('…'));
+        assert_eq!(truncated.chars().count(), 201);
+    }
+
+    #[test]
+    fn short_error_bodies_are_kept_whole() {
+        assert_eq!(truncate_body("  boom  "), "boom");
     }
 
     #[test]
