@@ -188,42 +188,64 @@ async fn fetch_kimi_provider() -> Option<ProviderPayload> {
 /// single baked image showing nothing fresh, so the freeze-on-error semantics
 /// the Claude-only tray has always had still apply. At most MAX_ROWS rows are
 /// returned — more would paint outside the 22px design height.
-fn tray_rows(payload: &UsagePayload) -> Option<Vec<(char, f64, Rgba<u8>)>> {
-    let ok: Vec<&ProviderPayload> = payload
+/// Per-provider tray identity, in one place: the one-letter row label, the
+/// bar color, and the name the tooltip uses.
+fn tray_identity(id: &str) -> (char, Rgba<u8>, &'static str) {
+    match id {
+        "kimi" => ('K', crate::tray_icon::COLOR_KIMI, "Kimi"),
+        _ => ('C', crate::tray_icon::COLOR_WEEKLY, "Claude"),
+    }
+}
+
+/// The ok providers that actually reach the icon, cap included. Both the rows
+/// and the tooltip are derived from this, so the tooltip can never name a
+/// provider the icon isn't showing.
+fn painted_providers(payload: &UsagePayload) -> Vec<&ProviderPayload> {
+    payload
         .providers
         .iter()
         .filter(|p| p.status == ProviderStatus::Ok)
-        .collect();
+        .take(crate::tray_icon::MAX_ROWS)
+        .collect()
+}
+
+fn tray_rows(payload: &UsagePayload) -> Option<Vec<(char, f64, Rgba<u8>)>> {
+    let ok = painted_providers(payload);
+    if ok.is_empty() {
+        return None;
+    }
     if ok.len() == 1 {
         let p = ok[0];
+        let (_, color, _) = tray_identity(&p.id);
         return Some(vec![
             (
                 'S',
                 p.session_percent as f64 / 100.0,
                 crate::tray_icon::COLOR_SESSION,
             ),
-            (
-                'W',
-                p.weekly_percent as f64 / 100.0,
-                crate::tray_icon::COLOR_WEEKLY,
-            ),
+            // The provider's own color, not Claude's: when Claude is the one
+            // that failed, this layout is the only thing on screen and it
+            // otherwise looked exactly like Claude's numbers.
+            ('W', p.weekly_percent as f64 / 100.0, color),
         ]);
-    }
-    if ok.is_empty() {
-        return None;
     }
     Some(
         ok.iter()
-            .take(crate::tray_icon::MAX_ROWS)
             .map(|p| {
-                let (label, color) = match p.id.as_str() {
-                    "kimi" => ('K', crate::tray_icon::COLOR_KIMI),
-                    _ => ('C', crate::tray_icon::COLOR_WEEKLY),
-                };
+                let (label, color, _) = tray_identity(&p.id);
                 (label, p.weekly_percent as f64 / 100.0, color)
             })
             .collect(),
     )
+}
+
+/// Names exactly the providers the icon is showing.
+fn tray_tooltip(payload: &UsagePayload) -> String {
+    let names: Vec<&str> = painted_providers(payload)
+        .iter()
+        .map(|p| tray_identity(&p.id).2)
+        .collect();
+    format!("{} Usage", names.join(" + "))
 }
 
 fn update_tray_icon(app: &AppHandle, payload: &UsagePayload) {
@@ -235,12 +257,7 @@ fn update_tray_icon(app: &AppHandle, payload: &UsagePayload) {
         let _ = tray.set_icon(Some(icon));
         let _ = tray.set_title(None::<&str>);
         // The builder-time tooltip predates the second provider.
-        let tooltip = if payload.providers.len() > 1 {
-            "Claude + Kimi Usage"
-        } else {
-            "Claude Usage"
-        };
-        let _ = tray.set_tooltip(Some(tooltip));
+        let _ = tray.set_tooltip(Some(tray_tooltip(payload)));
     }
 }
 
@@ -442,6 +459,42 @@ mod tests {
         assert_eq!(rows[0].1, 96.0 / 100.0);
         assert_eq!(rows[1].0, 'W');
         assert_eq!(rows[1].1, 19.0 / 100.0);
+        // Kimi's color, not Claude's: this layout is the whole icon, so
+        // painting it in Claude's purple made Kimi's numbers read as Claude's.
+        assert_eq!(rows[1].2, crate::tray_icon::COLOR_KIMI);
+    }
+
+    #[test]
+    fn tooltip_names_only_the_providers_on_the_icon() {
+        let both = UsagePayload::new(vec![
+            provider("claude", ProviderStatus::Ok, 45, 67),
+            provider("kimi", ProviderStatus::Ok, 96, 19),
+        ]);
+        assert_eq!(tray_tooltip(&both), "Claude + Kimi Usage");
+
+        // Kimi is configured but failing, so it is not on the icon and must
+        // not be in the tooltip either.
+        let kimi_down = UsagePayload::new(vec![
+            provider("claude", ProviderStatus::Ok, 45, 67),
+            provider("kimi", ProviderStatus::AuthError, 0, 0),
+        ]);
+        assert_eq!(tray_tooltip(&kimi_down), "Claude Usage");
+
+        let claude_down = UsagePayload::new(vec![
+            provider("claude", ProviderStatus::AuthError, 0, 0),
+            provider("kimi", ProviderStatus::Ok, 96, 19),
+        ]);
+        assert_eq!(tray_tooltip(&claude_down), "Kimi Usage");
+    }
+
+    #[test]
+    fn tooltip_respects_the_row_cap() {
+        let payload = UsagePayload::new(vec![
+            provider("claude", ProviderStatus::Ok, 45, 67),
+            provider("kimi", ProviderStatus::Ok, 96, 19),
+            provider("other", ProviderStatus::Ok, 10, 20),
+        ]);
+        assert_eq!(tray_tooltip(&payload), "Claude + Kimi Usage");
     }
 
     #[test]
