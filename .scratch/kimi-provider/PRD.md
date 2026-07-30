@@ -20,12 +20,22 @@ Authorization: Bearer <MOONSHOT_API_KEY>
 
 | Kimi field | App concept |
 |---|---|
-| `limits[0]` (window 300 min) | session % (`used/limit*100`) |
+| the `limits[]` entry whose window is 300 min | session % (`used/limit*100`) |
 | `usage` (limit/used/remaining/resetTime) | weekly % |
 | `parallel` (`details.len()` / `limit`) | extra metric: parallel sessions |
 | — | no per-model breakdown exists |
 
-Percentages are computed, not provided. `resetTime` of `usage` is assumed weekly — confirm in practice. A silent reshape is possible (happened twice with Anthropic), so the parser must emit `shape_warning` when `limits` or `usage` go missing.
+Percentages are computed, not provided. A silent reshape is possible (happened twice with Anthropic), so the parser must emit `shape_warning` when `limits` or `usage` go missing, or when no 300-minute window is present.
+
+### Open: is `usage.resetTime` really weekly?
+
+**Still unconfirmed.** The code labels it "Weekly" and the popup says so, on one observation.
+
+What the capture actually shows: taken 2026-07-29, `usage.resetTime` is 2026-08-04T11:59:17.868440Z — about 5 days 13 hours out — while the session window resets the same evening. Both timestamps carry identical fractional seconds (`.868440`), so they are derived from one account anchor rather than being independent counters.
+
+That is consistent with a 7-day window seen roughly a day and a half in. It is equally consistent with any longer window seen near its end. One sample cannot distinguish them.
+
+To settle it, capture `usage.resetTime` twice more than 24h apart: a fixed window keeps the same instant and jumps by exactly the period when it rolls. Until then the label is an assumption, not a finding — and note that a wrong guess here is cosmetic, since the percentage itself comes from `used`/`limit` and does not depend on the period.
 
 ## Risks
 
