@@ -7,6 +7,10 @@ Tauri v2 (Rust) + SvelteKit macOS menubar app that shows Claude usage percentage
 - **Native polling lives in Rust** ([commands.rs](src-tauri/src/commands.rs)) — not in the WebView — so it runs even when the popup is hidden. The frontend only displays data; it doesn't own the refresh loop.
 - **Two data paths into the popup**: (1) `invoke('trigger_refresh')` on mount, and (2) `listen('usage_updated')` for push updates from Rust-side polling. Both must work for the popup to show data immediately on first open.
 - **`trigger_refresh` has a 30s throttle** with `LAST_FETCH` + `LAST_PAYLOAD` caches. When throttled, it returns the cached payload instead of refetching. The frontend mirrors this with a 30s cooldown on the Refresh button (bouncing dots animation while disabled).
+- **The payload cache stores every fetch, ok or not.** It used to keep only the last *ok* payload, which was defensible with one provider ("keep the last known-good numbers") and wrong with two: a failing Claude froze the whole cache, so a Kimi provider that had just answered fine was served from a copy that could be days old, and a Kimi key removed while Claude was down went on rendering. The cache means "what the last fetch produced" — nothing more. The tray still freezes on error (see `tray_rows`), because a baked icon has no way to say "this is stale".
+- **The payload is `providers: Vec<ProviderPayload>`**, Claude always at index 0. A provider with no credentials is *omitted* from the array, not marked `disabled` — so a keyless install produces a payload byte-identical to a Claude-only build. `ProviderStatus::Disabled` exists but nothing emits it.
+- **The tray derives rows and tooltip from the same list** (`painted_providers` in commands.rs): ok providers only, capped at `MAX_ROWS`. Deriving the tooltip separately is how it ended up naming a provider that wasn't on the icon.
+- **Kimi's session bucket is found by its window, not by `limits[0]`.** The 300-minute entry (`window.duration == 300 && window.timeUnit == "TIME_UNIT_MINUTE"`) is what makes the popup's "Session (5h)" label true. Indexing position would silently report another bucket's numbers the day Kimi prepends one — and `shape_warning` could not catch it, because `limits[0]` would still exist. No match counts as drift and warns. Same lesson as the Claude `limits[]` note below; it applies to every provider.
 - **Tray icon is generated in Rust** ([tray_icon.rs](src-tauri/src/tray_icon.rs)) as an RGBA image with the percentages baked in — no native menu, click toggles the popup window.
 - **Per-model usage comes from `limits[]`, not the `seven_day_*` keys.** The API reshaped twice in July 2026. `seven_day_sonnet` / `seven_day_opus` are still present but permanently `null`; per-model figures now arrive as `limits[]` entries with `kind: "weekly_scoped"`, carrying `scope.model.display_name` and an integer `percent`. Iterate the array — never assume a fixed model set. Do **not** filter on `is_active`: only the session limit is ever `true`, so filtering hides every model. A captured payload is pinned in `src-tauri/fixtures/usage_response.json`; both reshapes were silent (200 OK, just less data), which is why `parse_api_response` sets a `shape_warning` when `limits` is missing entirely.
 
@@ -64,6 +68,24 @@ Two more things kept the prompts coming, both fixed and both easy to reintroduce
 - Every `security` invocation is bounded by a timeout with a kill fallback. A targeted lookup answers in ~10ms, but the subprocess has been observed to hang on some macOS 26.x setups.
 
 Errors from that subprocess report **stderr only** — stdout carries the secret.
+
+#### The same rules apply to [kimi_key.rs](src-tauri/src/state/kimi_key.rs), plus three of its own
+
+`token_cache.rs` only ever *reads*. `kimi_key.rs` also writes and deletes, which brings problems the token path never had:
+
+- **The key must never be a subprocess argument.** Process arguments are readable by any process running as the same user (`ps -ww`), and `security(1)` says so itself: `-w password  Specify password to be added. Put at end of command to be prompted (recommended)`. So `save_args()` ends in a bare `-w` and the secret goes to the child's stdin. If you ever "simplify" that back to `-w <key>`, you have reintroduced the leak.
+- **Write the key to stdin twice.** `security` prompts for the value and then for a confirmation, and reads both from stdin when it has no terminal. A single line makes the two reads disagree — and it then stores an **empty password while still exiting 0**. That silent-success mode is why `save()` reads the value back before reporting success. The two prompts land on *stderr*, so they are stripped before any error string is built.
+- **`exists()` must not pass `-w`.** `find-generic-password` answers existence with its exit status; `-w` makes `security` decrypt the secret and print it, only to be discarded. `read()` has its own arg list for that.
+
+Unlike `token_cache.rs`, `read()` has **no minimum interval between keychain reads** and is called once per poll. That is deliberate and not an oversight: the 10-minute floor exists because the Claude item's ACL belongs to another application's binary, so each read can prompt. This item is created by `/usr/bin/security` itself — per the man page, "the application which creates an item is trusted to access its data without warning" — so reads never prompt.
+
+### Tauri commands: sync means the main thread
+
+`#[tauri::command]` on a **non-async** fn compiles to `ExecutionContext::Blocking` (see `tauri-macros/src/command/wrapper.rs`), which runs the handler inline on the IPC thread. Anything that shells out — every keychain call here — freezes the whole app, tray included, for as long as the subprocess takes, and `/usr/bin/security` is bounded at 3s, not 3ms.
+
+Keychain commands are therefore `async fn` and hand the blocking call to `tauri::async_runtime::spawn_blocking` (`on_keychain_thread` in commands.rs).
+
+The same trap applies inside `tokio::join!`: it polls its branches in order on one task, so two "concurrent" fetches that each *begin* with a synchronous subprocess call run their subprocesses back to back. `fetch_usage_payload` takes the `AppHandle` rather than the state refs precisely so both keychain reads can be moved to the blocking pool, which needs an owned `'static` handle.
 
 ### Signing local builds
 
