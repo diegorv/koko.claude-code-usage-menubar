@@ -3,9 +3,11 @@
 // designated requirement, so a grant holds across rebuilds) — never the
 // in-process Keychain API, never plaintext files.
 //
-// The key itself never leaves this module: commands expose only booleans,
-// subprocess stdout is discarded unread (for `find -w` it carries the
-// secret), and error strings are built from stderr only.
+// The boundary is IPC, not this module: `read` returns the key into Rust
+// memory for the fetch layer, but the key must never cross to the frontend —
+// commands expose only booleans. Subprocess stdout carries the secret on
+// `find -w`, so it is piped only by `read` and nulled on every other
+// invocation, and error strings are built from stderr only.
 
 const SERVICE_NAME: &str = "koko-kimi-api-key";
 const ACCOUNT_NAME: &str = "kimi";

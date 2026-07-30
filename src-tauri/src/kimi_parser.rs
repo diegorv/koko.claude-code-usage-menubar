@@ -119,9 +119,11 @@ fn quota_number(value: &serde_json::Value) -> Option<f64> {
 mod tests {
     use super::*;
 
-    /// Captured from a live `/coding/v1/usages` response on 2026-07-29.
-    /// Pinned in full — unknown keys (`user`, `totalQuota`, `authentication`,
-    /// `subType`, `domain`) are ignored, and quota numbers stay strings.
+    /// Captured from a live `/coding/v1/usages` response on 2026-07-29, with
+    /// the user and session IDs neutralised — the point is the shape, not the
+    /// values. Pinned in full — unknown keys (`user`, `totalQuota`,
+    /// `authentication`, `subType`, `domain`) are ignored, and quota numbers
+    /// stay strings.
     const REAL_SHAPE_BODY: &str = include_str!("../fixtures/kimi_usage_response.json");
 
     #[test]

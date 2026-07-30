@@ -143,37 +143,41 @@ async fn fetch_kimi_provider() -> Option<ProviderPayload> {
 // --- Refresh cycle ---
 
 /// Picks what the tray shows, as `(label, percent 0.0..=1.0, color)` rows.
-/// One provider → the legacy session/weekly rows; several → one weekly row
-/// per provider ("C"/"K"), since there's no vertical room for per-provider
-/// session data (the popup carries the detail).
+/// Only ok providers participate: one → the legacy session/weekly rows;
+/// several → one weekly row per provider ("C"/"K"), since there's no vertical
+/// room for per-provider session data (the popup carries the detail). A
+/// non-ok provider drops out instead of freezing the others — a bad Kimi key
+/// must not pin stale Claude data.
 ///
-/// Returns None when the icon should stay untouched: it's a single baked
-/// image, so one provider's row can't be frozen while another refreshes —
-/// any non-ok provider skips the whole update, the same freeze-on-error
-/// semantics the Claude-only tray has always had.
+/// Returns None when no provider is ok, leaving the icon untouched: it's a
+/// single baked image showing nothing fresh, so the freeze-on-error semantics
+/// the Claude-only tray has always had still apply.
 fn tray_rows(payload: &UsagePayload) -> Option<Vec<(char, f64, Rgba<u8>)>> {
-    let claude = payload.providers.first()?;
-    if payload.providers.iter().any(|p| p.status != ProviderStatus::Ok) {
-        return None;
-    }
-    if payload.providers.len() == 1 {
+    let ok: Vec<&ProviderPayload> = payload
+        .providers
+        .iter()
+        .filter(|p| p.status == ProviderStatus::Ok)
+        .collect();
+    if ok.len() == 1 {
+        let p = ok[0];
         return Some(vec![
             (
                 'S',
-                claude.session_percent as f64 / 100.0,
+                p.session_percent as f64 / 100.0,
                 crate::tray_icon::COLOR_SESSION,
             ),
             (
                 'W',
-                claude.weekly_percent as f64 / 100.0,
+                p.weekly_percent as f64 / 100.0,
                 crate::tray_icon::COLOR_WEEKLY,
             ),
         ]);
     }
+    if ok.is_empty() {
+        return None;
+    }
     Some(
-        payload
-            .providers
-            .iter()
+        ok.iter()
             .map(|p| {
                 let (label, color) = match p.id.as_str() {
                     "kimi" => ('K', crate::tray_icon::COLOR_KIMI),
@@ -259,16 +263,30 @@ pub fn quit_app(app: AppHandle) {
 
 // --- Kimi API key management ---
 
-/// Stores the Kimi API key in the macOS Keychain (updates in place).
+/// Stores the Kimi API key in the macOS Keychain (updates in place). On
+/// success, spawns a refresh cycle so the popup gains the Kimi section via
+/// `usage_updated` immediately — `trigger_refresh`'s 30s throttle would
+/// otherwise keep serving the pre-save payload and the save would look
+/// failed. `do_refresh_cycle` is the poll path and has no throttle.
 #[tauri::command]
-pub fn save_kimi_key(key: String) -> Result<(), String> {
-    crate::state::kimi_key::save(&key)
+pub fn save_kimi_key(app: AppHandle, key: String) -> Result<(), String> {
+    crate::state::kimi_key::save(&key)?;
+    tauri::async_runtime::spawn(async move {
+        do_refresh_cycle(&app).await;
+    });
+    Ok(())
 }
 
-/// Removes the Kimi API key from the macOS Keychain.
+/// Removes the Kimi API key from the macOS Keychain. On success, spawns a
+/// refresh cycle so the popup drops the Kimi section immediately (same
+/// throttle rationale as `save_kimi_key`).
 #[tauri::command]
-pub fn delete_kimi_key() -> Result<(), String> {
-    crate::state::kimi_key::remove()
+pub fn delete_kimi_key(app: AppHandle) -> Result<(), String> {
+    crate::state::kimi_key::remove()?;
+    tauri::async_runtime::spawn(async move {
+        do_refresh_cycle(&app).await;
+    });
+    Ok(())
 }
 
 /// Whether a Kimi API key is stored. The key itself never crosses the IPC
@@ -337,17 +355,50 @@ mod tests {
 
     #[test]
     fn non_ok_claude_skips_update() {
+        // Single provider, nothing fresh to show — the freeze-on-error
+        // semantics the Claude-only tray has always had.
         let payload = UsagePayload::new(vec![provider("claude", ProviderStatus::AuthError, 0, 0)]);
         assert!(tray_rows(&payload).is_none());
     }
 
     #[test]
-    fn non_ok_kimi_skips_update() {
-        // The icon is one baked image — it can't hold a stale Kimi row while
-        // refreshing Claude, so the whole update is skipped (today's semantics).
+    fn non_ok_kimi_keeps_claude_session_weekly_rows() {
+        // A bad Kimi key must not freeze fresh Claude data: the failing
+        // provider drops out and the survivor gets the single-provider
+        // session/weekly layout.
         let payload = UsagePayload::new(vec![
             provider("claude", ProviderStatus::Ok, 45, 67),
             provider("kimi", ProviderStatus::RateLimited, 0, 0),
+        ]);
+        let rows = tray_rows(&payload).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, 'S');
+        assert_eq!(rows[0].1, 45.0 / 100.0);
+        assert_eq!(rows[0].2, crate::tray_icon::COLOR_SESSION);
+        assert_eq!(rows[1].0, 'W');
+        assert_eq!(rows[1].1, 67.0 / 100.0);
+        assert_eq!(rows[1].2, crate::tray_icon::COLOR_WEEKLY);
+    }
+
+    #[test]
+    fn non_ok_claude_keeps_kimi_session_weekly_rows() {
+        let payload = UsagePayload::new(vec![
+            provider("claude", ProviderStatus::AuthError, 0, 0),
+            provider("kimi", ProviderStatus::Ok, 96, 19),
+        ]);
+        let rows = tray_rows(&payload).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, 'S');
+        assert_eq!(rows[0].1, 96.0 / 100.0);
+        assert_eq!(rows[1].0, 'W');
+        assert_eq!(rows[1].1, 19.0 / 100.0);
+    }
+
+    #[test]
+    fn both_providers_non_ok_skips_update() {
+        let payload = UsagePayload::new(vec![
+            provider("claude", ProviderStatus::Error, 0, 0),
+            provider("kimi", ProviderStatus::AuthError, 0, 0),
         ]);
         assert!(tray_rows(&payload).is_none());
     }
