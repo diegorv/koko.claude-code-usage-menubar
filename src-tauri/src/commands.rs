@@ -177,17 +177,6 @@ async fn fetch_kimi_provider() -> Option<ProviderPayload> {
 
 // --- Refresh cycle ---
 
-/// Picks what the tray shows, as `(label, percent 0.0..=1.0, color)` rows.
-/// Only ok providers participate: one → the legacy session/weekly rows;
-/// several → one weekly row per provider ("C"/"K"), since there's no vertical
-/// room for per-provider session data (the popup carries the detail). A
-/// non-ok provider drops out instead of freezing the others — a bad Kimi key
-/// must not pin stale Claude data.
-///
-/// Returns None when no provider is ok, leaving the icon untouched: it's a
-/// single baked image showing nothing fresh, so the freeze-on-error semantics
-/// the Claude-only tray has always had still apply. At most MAX_ROWS rows are
-/// returned — more would paint outside the 22px design height.
 /// Per-provider tray identity, in one place: the one-letter row label, the
 /// bar color, and the name the tooltip uses.
 fn tray_identity(id: &str) -> (char, Rgba<u8>, &'static str) {
@@ -209,31 +198,31 @@ fn painted_providers(payload: &UsagePayload) -> Vec<&ProviderPayload> {
         .collect()
 }
 
-fn tray_rows(payload: &UsagePayload) -> Option<Vec<(char, f64, Rgba<u8>)>> {
+/// Picks what the tray shows, as `(label, session, weekly, color)` grid rows,
+/// percentages in 0.0..=1.0. One row per ok provider, carrying both of its
+/// figures — a second provider costs a row, not the session numbers. A non-ok
+/// provider drops out instead of freezing the others: a bad Kimi key must not
+/// pin stale Claude data.
+///
+/// Returns None when no provider is ok, leaving the icon untouched: it's a
+/// single baked image showing nothing fresh, so the freeze-on-error semantics
+/// the Claude-only tray has always had still apply. At most MAX_ROWS rows are
+/// returned — more would paint outside the 22px design height.
+fn tray_rows(payload: &UsagePayload) -> Option<Vec<crate::tray_icon::TrayRow>> {
     let ok = painted_providers(payload);
     if ok.is_empty() {
         return None;
-    }
-    if ok.len() == 1 {
-        let p = ok[0];
-        let (_, color, _) = tray_identity(&p.id);
-        return Some(vec![
-            (
-                'S',
-                p.session_percent as f64 / 100.0,
-                crate::tray_icon::COLOR_SESSION,
-            ),
-            // The provider's own color, not Claude's: when Claude is the one
-            // that failed, this layout is the only thing on screen and it
-            // otherwise looked exactly like Claude's numbers.
-            ('W', p.weekly_percent as f64 / 100.0, color),
-        ]);
     }
     Some(
         ok.iter()
             .map(|p| {
                 let (label, color, _) = tray_identity(&p.id);
-                (label, p.weekly_percent as f64 / 100.0, color)
+                (
+                    label,
+                    p.session_percent as f64 / 100.0,
+                    p.weekly_percent as f64 / 100.0,
+                    color,
+                )
             })
             .collect(),
     )
@@ -389,35 +378,36 @@ mod tests {
     }
 
     #[test]
-    fn single_provider_keeps_session_weekly_rows() {
+    fn single_provider_gets_one_row_with_both_figures() {
         let payload = UsagePayload::new(vec![provider("claude", ProviderStatus::Ok, 45, 67)]);
         let rows = tray_rows(&payload).unwrap();
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].0, 'S');
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, 'C');
         assert_eq!(rows[0].1, 45.0 / 100.0);
-        assert_eq!(rows[0].2, crate::tray_icon::COLOR_SESSION);
-        assert_eq!(rows[1].0, 'W');
-        assert_eq!(rows[1].1, 67.0 / 100.0);
-        assert_eq!(rows[1].2, crate::tray_icon::COLOR_WEEKLY);
+        assert_eq!(rows[0].2, 67.0 / 100.0);
+        assert_eq!(rows[0].3, crate::tray_icon::COLOR_WEEKLY);
     }
 
     #[test]
-    fn two_providers_show_weekly_rows_with_provider_labels() {
+    fn two_providers_show_session_and_weekly_per_provider() {
         let payload = UsagePayload::new(vec![
             provider("claude", ProviderStatus::Ok, 45, 67),
             provider("kimi", ProviderStatus::Ok, 96, 19),
         ]);
         let rows = tray_rows(&payload).unwrap();
         assert_eq!(rows.len(), 2);
-        // Weekly, not session, per provider — session is popup-only.
+        // Both figures survive the second provider — the whole point of the
+        // grid layout. A second provider costs a row, not the session numbers.
         assert_eq!(rows[0].0, 'C');
-        assert_eq!(rows[0].1, 67.0 / 100.0);
+        assert_eq!(rows[0].1, 45.0 / 100.0);
+        assert_eq!(rows[0].2, 67.0 / 100.0);
         assert_eq!(rows[1].0, 'K');
-        assert_eq!(rows[1].1, 19.0 / 100.0);
+        assert_eq!(rows[1].1, 96.0 / 100.0);
+        assert_eq!(rows[1].2, 19.0 / 100.0);
         // Distinct per-provider colors; Claude keeps today's weekly color.
-        assert_eq!(rows[0].2, crate::tray_icon::COLOR_WEEKLY);
-        assert_eq!(rows[1].2, crate::tray_icon::COLOR_KIMI);
-        assert_ne!(rows[0].2, rows[1].2);
+        assert_eq!(rows[0].3, crate::tray_icon::COLOR_WEEKLY);
+        assert_eq!(rows[1].3, crate::tray_icon::COLOR_KIMI);
+        assert_ne!(rows[0].3, rows[1].3);
     }
 
     #[test]
@@ -429,39 +419,35 @@ mod tests {
     }
 
     #[test]
-    fn non_ok_kimi_keeps_claude_session_weekly_rows() {
+    fn non_ok_kimi_keeps_claudes_row() {
         // A bad Kimi key must not freeze fresh Claude data: the failing
-        // provider drops out and the survivor gets the single-provider
-        // session/weekly layout.
+        // provider drops out and the survivor keeps its whole row.
         let payload = UsagePayload::new(vec![
             provider("claude", ProviderStatus::Ok, 45, 67),
             provider("kimi", ProviderStatus::RateLimited, 0, 0),
         ]);
         let rows = tray_rows(&payload).unwrap();
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].0, 'S');
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, 'C');
         assert_eq!(rows[0].1, 45.0 / 100.0);
-        assert_eq!(rows[0].2, crate::tray_icon::COLOR_SESSION);
-        assert_eq!(rows[1].0, 'W');
-        assert_eq!(rows[1].1, 67.0 / 100.0);
-        assert_eq!(rows[1].2, crate::tray_icon::COLOR_WEEKLY);
+        assert_eq!(rows[0].2, 67.0 / 100.0);
+        assert_eq!(rows[0].3, crate::tray_icon::COLOR_WEEKLY);
     }
 
     #[test]
-    fn non_ok_claude_keeps_kimi_session_weekly_rows() {
+    fn non_ok_claude_keeps_kimis_row() {
         let payload = UsagePayload::new(vec![
             provider("claude", ProviderStatus::AuthError, 0, 0),
             provider("kimi", ProviderStatus::Ok, 96, 19),
         ]);
         let rows = tray_rows(&payload).unwrap();
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].0, 'S');
-        assert_eq!(rows[0].1, 96.0 / 100.0);
-        assert_eq!(rows[1].0, 'W');
-        assert_eq!(rows[1].1, 19.0 / 100.0);
-        // Kimi's color, not Claude's: this layout is the whole icon, so
+        assert_eq!(rows.len(), 1);
+        // Kimi's label and color, not Claude's: this row is the whole icon, so
         // painting it in Claude's purple made Kimi's numbers read as Claude's.
-        assert_eq!(rows[1].2, crate::tray_icon::COLOR_KIMI);
+        assert_eq!(rows[0].0, 'K');
+        assert_eq!(rows[0].1, 96.0 / 100.0);
+        assert_eq!(rows[0].2, 19.0 / 100.0);
+        assert_eq!(rows[0].3, crate::tray_icon::COLOR_KIMI);
     }
 
     #[test]

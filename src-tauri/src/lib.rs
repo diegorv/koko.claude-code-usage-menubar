@@ -41,11 +41,9 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 
     let handle = app.handle();
 
-    // Generate initial tray icon with empty progress bars
-    let icon = tray_icon::generate_icon(vec![
-        ('S', 0.0, tray_icon::COLOR_SESSION),
-        ('W', 0.0, tray_icon::COLOR_WEEKLY),
-    ]);
+    // Generate initial tray icon with empty progress bars. One row, Claude's:
+    // no fetch has happened yet, and Claude is always the first provider.
+    let icon = tray_icon::generate_icon(vec![('C', 0.0, 0.0, tray_icon::COLOR_WEEKLY)]);
 
     // Create system tray (no native menu)
     TrayIconBuilder::with_id("main-tray")

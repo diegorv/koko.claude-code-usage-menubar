@@ -1,6 +1,6 @@
 # Plan: session *and* weekly on the tray, per provider
 
-Status: designed, not implemented.
+Status: implemented.
 
 ## Why
 
@@ -29,19 +29,32 @@ Metrics, in design points, alongside the constants they replace in
 
 | what | value | note |
 |---|---|---|
-| row label | 10 | `C`/`K` plus gap; new |
-| bucket label | 8 | `S`/`W`, one char, **no colon** — the colon bought nothing at this width |
+| row label | 13 | `C`/`K` plus gap; new |
+| bucket label | 13 | `S`/`W`, one char, **no colon** — the colon bought nothing at this width |
 | value | 32 | 4 chars, unchanged `VALUE_CHARS`; `100%` is the worst case |
+| bar gap | 3 | was 1 |
 | bar | 24 | 5 segments of 4pt with 1pt gaps; `NUM_SEGMENTS` drops 10 → 5 |
-| cell | 65 | `8 + 32 + 1 + 24` |
+| cell | 72 | `13 + 32 + 3 + 24` |
 | cell gap | 6 | new |
-| **design width** | **148** | `1 + 10 + 65 + 6 + 65 + 1`; today 102 |
+| **design width** | **165** | `1 + 13 + 72 + 6 + 72 + 1`; before, 102 |
 
 `DESIGN_HEIGHT`, `LINE_HEIGHT`, `SCALE`, `FONT_SIZE`, `MAX_ROWS`: unchanged.
+
+The two label widths do **not** derive from `CHAR_ADVANCE`. That constant is the
+digit advance; capitals are wider, and at 8pt each the first render came out as
+`CS12%` and `W100%` with the glyphs touching. Nothing in the test module could
+catch that — every assertion passes on a layout whose text overlaps — so the
+widths were set by eye against a dumped PNG. `dump_icon_png` (an `#[ignore]`d test)
+is how that render is produced, and is the tool to reach for the next time these
+metrics move.
 
 Bars lose half their resolution — 20% per segment instead of 10%. The number beside
 each bar stays exact, and the bar was always the glanceable indicator, not the
 readout. That is the price of a second column at a width worth paying.
+
+One consequence needed fixing: `round(5 × 0.07) == 0`, so every percentage under
+10% painted a completely idle bar, which ten segments never did. `filled_segments`
+now floors any non-zero percentage at one lit segment.
 
 ## Colors
 
@@ -58,7 +71,7 @@ separates the two *buckets* — which is what it did in the original `S`/`W` lay
 
 ## One provider
 
-Width is fixed at 148 whether one provider is ok or two. A Claude-only install pays
+Width is fixed at 165 whether one provider is ok or two. A Claude-only install pays
 the full width and gets a single grid row, centred vertically at
 `line_y = (DESIGN_HEIGHT - LINE_HEIGHT) / 2 = 5`.
 
@@ -74,9 +87,9 @@ away with it.
 
 **[src-tauri/src/tray_icon.rs](../../src-tauri/src/tray_icon.rs)**
 
-- `generate_icon` takes grid rows, `(char, f64, f64, Rgba<u8>)` —
+- `generate_icon` takes grid rows — `TrayRow`, i.e.
   `(provider label, session 0.0..=1.0, weekly 0.0..=1.0, provider color)` — instead
-  of today's `(label, pct, color)`.
+  of the old `(label, pct, color)`.
 - `draw_line` becomes a row painter: row label, then two cells at fixed X offsets.
   Factor the cell (bucket label + value + bar) into its own function so both columns
   paint through the same code.
@@ -99,13 +112,15 @@ Rewrite, not extend — the row tuple changes shape, so every existing assertion
 
 `commands.rs`:
 
-- `single_provider_keeps_session_weekly_rows` → one grid row carrying *both*
-  percentages, labelled `C`.
+- `single_provider_keeps_session_weekly_rows` → `single_provider_gets_one_row_with_both_figures`:
+  one grid row carrying *both* percentages, labelled `C`.
 - `non_ok_kimi_keeps_claude_session_weekly_rows` and
-  `non_ok_claude_keeps_kimi_session_weekly_rows` → same, asserting the survivor's own
-  label and color (the Kimi case is the one that used to read as Claude's numbers).
-- `two_providers_show_weekly_rows_with_provider_labels` → now asserts session *and*
-  weekly per row. Rename: it is no longer weekly-only.
+  `non_ok_claude_keeps_kimi_session_weekly_rows` → `..._keeps_claudes_row` /
+  `..._keeps_kimis_row`: same, asserting the survivor's own label and color (the
+  Kimi case is the one that used to read as Claude's numbers).
+- `two_providers_show_weekly_rows_with_provider_labels` →
+  `two_providers_show_session_and_weekly_per_provider`, asserting both figures per
+  row. It is no longer weekly-only, so the old name lied.
 - `rows_are_capped_at_max_rows`, `both_providers_non_ok_skips_update`,
   `non_ok_claude_skips_update`, `empty_providers_skips_update`, both tooltip tests:
   unchanged behaviour, mechanical fixes only where they index the tuple.
@@ -115,12 +130,15 @@ Rewrite, not extend — the row tuple changes shape, so every existing assertion
 - `sw_rows` helper → `grid_rows`.
 - `two_rows_paint_both_bands` keeps its point: both 11px bands must have painted
   pixels with two rows.
-- Add: a single row paints in the *centre* band, not the top one — that is the new
-  vertical-centring path, and nothing else covers it.
-- Add: a row paints in all four cell regions, so a cell landing at the wrong X is
-  caught the way `two_rows_paint_both_bands` catches a wrong Y.
-- `test_rows_fit_design_height` stays; add its width twin — the rightmost cell's bar
-  must end inside `DESIGN_WIDTH`.
+- `a_single_row_paints_the_centre_band` — the new vertical-centring path, which
+  nothing else covers; also asserts the band above it stays empty.
+- `a_row_paints_both_cells` — both bar regions painted, so a cell landing at the
+  wrong X is caught the way `two_rows_paint_both_bands` catches a wrong Y.
+- `an_empty_session_leaves_the_weekly_bar_alone` — the two cells are independent.
+- `a_nonzero_percentage_lights_a_segment` — the five-segment rounding floor.
+- `test_rows_fit_design_height` stays; `cells_fit_design_width` is its width twin,
+  written as `const` assertions so a bad layout fails the build rather than a run.
+- `dump_icon_png`, `#[ignore]`d: renders the icon to PNG for a human to check.
 
 ## Out of scope
 
