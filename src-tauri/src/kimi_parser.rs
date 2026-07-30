@@ -55,14 +55,30 @@ pub fn error_payload(status: ProviderStatus, message: &str) -> ProviderPayload {
     }
 }
 
+/// The session bucket is the 300-minute window, which is also what lets the
+/// popup label the row "Session (5h)" honestly.
+const SESSION_WINDOW_MINUTES: u64 = 300;
+
+/// Finds the session bucket by its window rather than by position. Taking
+/// `limits[0]` worked on every observed response but would silently start
+/// reporting some other window's numbers the day Kimi prepends one — the same
+/// failure that hid two Anthropic reshapes, except worse: `limits[0]` still
+/// exists, so nothing would warn. No match is treated as drift.
+fn find_session_entry(json: &serde_json::Value) -> Option<&serde_json::Value> {
+    json["limits"].as_array()?.iter().find(|entry| {
+        entry["window"]["timeUnit"] == "TIME_UNIT_MINUTE"
+            && entry["window"]["duration"].as_u64() == Some(SESSION_WINDOW_MINUTES)
+    })
+}
+
 pub(crate) fn parse_api_response(json: &serde_json::Value) -> ProviderPayload {
-    // `limits[0]` is the session window (300 minutes in every observed
-    // response) and `usage` is the weekly bucket. Both are load-bearing — if
-    // either goes missing the API reshaped, which must warn rather than
-    // quietly show zeros. An empty limits array warns too: unlike Claude's
-    // `limits: []` (legitimately "nothing reported"), Kimi's only session
-    // metric comes from limits[0], so empty means drift, never a real account.
-    let session_entry = json["limits"].as_array().and_then(|l| l.first());
+    // The 300-minute entry of `limits` is the session window and `usage` is
+    // the weekly bucket. Both are load-bearing — if either goes missing the
+    // API reshaped, which must warn rather than quietly show zeros. An empty
+    // limits array warns too: unlike Claude's `limits: []` (legitimately
+    // "nothing reported"), Kimi's only session metric lives in there, so empty
+    // means drift, never a real account.
+    let session_entry = find_session_entry(json);
     let shape_warning = (session_entry.is_none() || !json["usage"].is_object()).then(|| {
         "Unexpected API response shape — some usage data may be missing.".to_string()
     });
@@ -126,6 +142,22 @@ mod tests {
     /// stay strings.
     const REAL_SHAPE_BODY: &str = include_str!("../fixtures/kimi_usage_response.json");
 
+    /// A `limits` entry shaped like the live one: the 300-minute window plus
+    /// its quota detail.
+    fn session_limit(limit: &str, used: &str) -> serde_json::Value {
+        serde_json::json!({
+            "window": {"duration": 300, "timeUnit": "TIME_UNIT_MINUTE"},
+            "detail": {"limit": limit, "used": used},
+        })
+    }
+
+    fn numeric_session_limit(limit: u64, used: u64) -> serde_json::Value {
+        serde_json::json!({
+            "window": {"duration": 300, "timeUnit": "TIME_UNIT_MINUTE"},
+            "detail": {"limit": limit, "used": used},
+        })
+    }
+
     #[test]
     fn parses_captured_live_response() {
         let payload = classify(200, None, REAL_SHAPE_BODY);
@@ -134,7 +166,7 @@ mod tests {
         assert_eq!(payload.id, "kimi");
         assert_eq!(payload.title, "Kimi Usage");
 
-        // limits[0].detail: "96"/"100" → 96%.
+        // The 300-minute limit's detail: "96"/"100" → 96%.
         assert_eq!(payload.session_percent, 96);
         assert_eq!(
             payload.session_resets_at.as_deref(),
@@ -179,7 +211,7 @@ mod tests {
     #[test]
     fn missing_usage_object_warns() {
         let payload = parse_api_response(
-            &serde_json::json!({"limits": [{"detail": {"limit": "100", "used": "50"}}]}),
+            &serde_json::json!({"limits": [session_limit("100", "50")]}),
         );
         assert!(payload.shape_warning.is_some());
         assert_eq!(payload.session_percent, 50);
@@ -196,9 +228,56 @@ mod tests {
     }
 
     #[test]
+    fn session_entry_is_found_by_window_not_by_position() {
+        // A daily bucket prepended to limits[] used to become the "session"
+        // row: right label, wrong numbers, and no warning, since limits[0]
+        // still existed.
+        let payload = parse_api_response(&serde_json::json!({
+            "limits": [
+                {"window": {"duration": 1, "timeUnit": "TIME_UNIT_DAY"},
+                 "detail": {"limit": "100", "used": "7"}},
+                session_limit("100", "96"),
+            ],
+            "usage": {"limit": "100", "used": "19"},
+        }));
+        assert_eq!(payload.session_percent, 96);
+        assert_eq!(payload.shape_warning, None);
+    }
+
+    #[test]
+    fn limits_without_the_session_window_warns() {
+        let payload = parse_api_response(&serde_json::json!({
+            "limits": [
+                {"window": {"duration": 1, "timeUnit": "TIME_UNIT_DAY"},
+                 "detail": {"limit": "100", "used": "7"}},
+            ],
+            "usage": {"limit": "100", "used": "19"},
+        }));
+        assert!(payload.shape_warning.is_some());
+        assert_eq!(payload.session_percent, 0);
+        // Weekly is independent and still parsed.
+        assert_eq!(payload.weekly_percent, 19);
+    }
+
+    #[test]
+    fn a_resized_session_window_warns_instead_of_relabelling() {
+        // The popup calls this row "Session (5h)". If Kimi ever moves the
+        // window, drift must surface rather than the label quietly lying.
+        let payload = parse_api_response(&serde_json::json!({
+            "limits": [
+                {"window": {"duration": 240, "timeUnit": "TIME_UNIT_MINUTE"},
+                 "detail": {"limit": "100", "used": "96"}},
+            ],
+            "usage": {"limit": "100", "used": "19"},
+        }));
+        assert!(payload.shape_warning.is_some());
+        assert_eq!(payload.session_percent, 0);
+    }
+
+    #[test]
     fn percent_is_computed_and_rounded() {
         let payload = parse_api_response(&serde_json::json!({
-            "limits": [{"detail": {"limit": "3", "used": "1"}}],
+            "limits": [session_limit("3", "1")],
             "usage": {"limit": "100", "used": "19"},
         }));
         // 1/3 = 33.33… → 33.
@@ -208,7 +287,7 @@ mod tests {
     #[test]
     fn percent_is_clamped_at_100() {
         let payload = parse_api_response(&serde_json::json!({
-            "limits": [{"detail": {"limit": "100", "used": "140"}}],
+            "limits": [session_limit("100", "140")],
             "usage": {"limit": "100", "used": "19"},
         }));
         assert_eq!(payload.session_percent, 100);
@@ -217,7 +296,7 @@ mod tests {
     #[test]
     fn zero_limit_yields_zero_percent() {
         let payload = parse_api_response(&serde_json::json!({
-            "limits": [{"detail": {"limit": "0", "used": "0"}}],
+            "limits": [session_limit("0", "0")],
             "usage": {"limit": "100", "used": "19"},
         }));
         assert_eq!(payload.session_percent, 0);
@@ -226,7 +305,7 @@ mod tests {
     #[test]
     fn numeric_quotas_are_tolerated() {
         let payload = parse_api_response(&serde_json::json!({
-            "limits": [{"detail": {"limit": 100, "used": 40}}],
+            "limits": [numeric_session_limit(100, 40)],
             "usage": {"limit": "100", "used": "19"},
         }));
         assert_eq!(payload.session_percent, 40);
@@ -235,7 +314,7 @@ mod tests {
     #[test]
     fn missing_parallel_reports_zero_of_zero() {
         let payload = parse_api_response(&serde_json::json!({
-            "limits": [{"detail": {"limit": "100", "used": "50"}}],
+            "limits": [session_limit("100", "50")],
             "usage": {"limit": "100", "used": "19"},
         }));
         assert!(matches!(
