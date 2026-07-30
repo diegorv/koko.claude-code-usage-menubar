@@ -1,4 +1,5 @@
 use std::sync::LazyLock;
+use image::Rgba;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::kimi_parser;
@@ -141,18 +142,54 @@ async fn fetch_kimi_provider() -> Option<ProviderPayload> {
 
 // --- Refresh cycle ---
 
+/// Picks what the tray shows, as `(label, percent 0.0..=1.0, color)` rows.
+/// One provider → the legacy session/weekly rows; several → one weekly row
+/// per provider ("C"/"K"), since there's no vertical room for per-provider
+/// session data (the popup carries the detail).
+///
+/// Returns None when the icon should stay untouched: it's a single baked
+/// image, so one provider's row can't be frozen while another refreshes —
+/// any non-ok provider skips the whole update, the same freeze-on-error
+/// semantics the Claude-only tray has always had.
+fn tray_rows(payload: &UsagePayload) -> Option<Vec<(char, f64, Rgba<u8>)>> {
+    let claude = payload.providers.first()?;
+    if payload.providers.iter().any(|p| p.status != ProviderStatus::Ok) {
+        return None;
+    }
+    if payload.providers.len() == 1 {
+        return Some(vec![
+            (
+                'S',
+                claude.session_percent as f64 / 100.0,
+                crate::tray_icon::COLOR_SESSION,
+            ),
+            (
+                'W',
+                claude.weekly_percent as f64 / 100.0,
+                crate::tray_icon::COLOR_WEEKLY,
+            ),
+        ]);
+    }
+    Some(
+        payload
+            .providers
+            .iter()
+            .map(|p| {
+                let (label, color) = match p.id.as_str() {
+                    "kimi" => ('K', crate::tray_icon::COLOR_KIMI),
+                    _ => ('C', crate::tray_icon::COLOR_WEEKLY),
+                };
+                (label, p.weekly_percent as f64 / 100.0, color)
+            })
+            .collect(),
+    )
+}
+
 fn update_tray_icon(app: &AppHandle, payload: &UsagePayload) {
-    // The tray shows the first (Claude) provider only — multi-provider tray
-    // layout is a separate change.
-    let Some(claude) = payload.providers.first() else {
+    let Some(rows) = tray_rows(payload) else {
         return;
     };
-    if claude.status != ProviderStatus::Ok {
-        return;
-    }
-    let session = claude.session_percent as f64 / 100.0;
-    let weekly = claude.weekly_percent as f64 / 100.0;
-    let icon = crate::tray_icon::generate_icon(session, weekly);
+    let icon = crate::tray_icon::generate_icon(rows);
     if let Some(tray) = app.tray_by_id("main-tray") {
         let _ = tray.set_icon(Some(icon));
         let _ = tray.set_title(None::<&str>);
@@ -240,4 +277,84 @@ pub fn delete_kimi_key() -> Result<(), String> {
 #[tauri::command]
 pub fn has_kimi_key() -> bool {
     crate::state::kimi_key::exists().unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::ProviderExtra;
+
+    fn provider(id: &str, status: ProviderStatus, session: u32, weekly: u32) -> ProviderPayload {
+        ProviderPayload {
+            id: id.to_string(),
+            title: format!("{} Usage", id),
+            status,
+            session_percent: session,
+            session_resets_at: None,
+            weekly_percent: weekly,
+            weekly_resets_at: None,
+            models: vec![],
+            extra: ProviderExtra::ExtraUsage {
+                enabled: false,
+                percent: 0,
+            },
+            error_message: None,
+            shape_warning: None,
+        }
+    }
+
+    #[test]
+    fn single_provider_keeps_session_weekly_rows() {
+        let payload = UsagePayload::new(vec![provider("claude", ProviderStatus::Ok, 45, 67)]);
+        let rows = tray_rows(&payload).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, 'S');
+        assert_eq!(rows[0].1, 45.0 / 100.0);
+        assert_eq!(rows[0].2, crate::tray_icon::COLOR_SESSION);
+        assert_eq!(rows[1].0, 'W');
+        assert_eq!(rows[1].1, 67.0 / 100.0);
+        assert_eq!(rows[1].2, crate::tray_icon::COLOR_WEEKLY);
+    }
+
+    #[test]
+    fn two_providers_show_weekly_rows_with_provider_labels() {
+        let payload = UsagePayload::new(vec![
+            provider("claude", ProviderStatus::Ok, 45, 67),
+            provider("kimi", ProviderStatus::Ok, 96, 19),
+        ]);
+        let rows = tray_rows(&payload).unwrap();
+        assert_eq!(rows.len(), 2);
+        // Weekly, not session, per provider — session is popup-only.
+        assert_eq!(rows[0].0, 'C');
+        assert_eq!(rows[0].1, 67.0 / 100.0);
+        assert_eq!(rows[1].0, 'K');
+        assert_eq!(rows[1].1, 19.0 / 100.0);
+        // Distinct per-provider colors; Claude keeps today's weekly color.
+        assert_eq!(rows[0].2, crate::tray_icon::COLOR_WEEKLY);
+        assert_eq!(rows[1].2, crate::tray_icon::COLOR_KIMI);
+        assert_ne!(rows[0].2, rows[1].2);
+    }
+
+    #[test]
+    fn non_ok_claude_skips_update() {
+        let payload = UsagePayload::new(vec![provider("claude", ProviderStatus::AuthError, 0, 0)]);
+        assert!(tray_rows(&payload).is_none());
+    }
+
+    #[test]
+    fn non_ok_kimi_skips_update() {
+        // The icon is one baked image — it can't hold a stale Kimi row while
+        // refreshing Claude, so the whole update is skipped (today's semantics).
+        let payload = UsagePayload::new(vec![
+            provider("claude", ProviderStatus::Ok, 45, 67),
+            provider("kimi", ProviderStatus::RateLimited, 0, 0),
+        ]);
+        assert!(tray_rows(&payload).is_none());
+    }
+
+    #[test]
+    fn empty_providers_skips_update() {
+        let payload = UsagePayload::new(vec![]);
+        assert!(tray_rows(&payload).is_none());
+    }
 }

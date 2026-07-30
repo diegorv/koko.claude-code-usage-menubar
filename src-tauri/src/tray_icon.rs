@@ -26,7 +26,9 @@ const DESIGN_HEIGHT: u32 = 22;
 const LINE_HEIGHT: u32 = 11;
 const LINE_GAP: u32 = 0;
 const LINE1_Y: u32 = 0;
-const LINE2_Y: u32 = LINE1_Y + LINE_HEIGHT + LINE_GAP;
+/// Rows that fit the design height: S/W for a single provider, or one weekly
+/// row per provider when several are active.
+const MAX_ROWS: usize = 2;
 
 // Bar layout
 const NUM_SEGMENTS: u32 = 10;
@@ -54,8 +56,12 @@ const FONT_SIZE: f32 = 15.0 * SCALE as f32;
 const TEXT_Y_OFFSET: i32 = -3 * SCALE as i32;
 
 // Colors
-const COLOR_SESSION: Rgba<u8> = Rgba([107, 127, 224, 255]);
-const COLOR_WEEKLY: Rgba<u8> = Rgba([192, 96, 208, 255]);
+pub(crate) const COLOR_SESSION: Rgba<u8> = Rgba([107, 127, 224, 255]);
+pub(crate) const COLOR_WEEKLY: Rgba<u8> = Rgba([192, 96, 208, 255]);
+// Kimi's identity color in the two-provider layout — the teal the popup
+// already uses (#4db6a0), distinct from Claude's blue/purple and the warning
+// amber, and proven legible on light and dark surfaces.
+pub(crate) const COLOR_KIMI: Rgba<u8> = Rgba([77, 182, 160, 255]);
 const COLOR_SEGMENT_OFF: Rgba<u8> = Rgba([140, 140, 140, 80]);
 const COLOR_WARNING: Rgba<u8> = Rgba([224, 160, 48, 255]);
 const COLOR_CRITICAL: Rgba<u8> = Rgba([224, 80, 80, 255]);
@@ -116,14 +122,19 @@ fn menubar_is_dark_cached() -> bool {
     value
 }
 
-/// Generates a dynamic tray icon with segmented progress bars
-pub fn generate_icon(session: f64, weekly: f64) -> Image<'static> {
+/// Generates a dynamic tray icon with segmented progress bars, one row per
+/// `(label, percent 0.0..=1.0, identity color)` entry, top to bottom.
+/// At most MAX_ROWS fit the 22px design height; callers never pass more.
+pub fn generate_icon(rows: Vec<(char, f64, Rgba<u8>)>) -> Image<'static> {
     let font = &*FONT;
     let mut img = RgbaImage::new(ICON_WIDTH, ICON_HEIGHT);
     let text_color = if menubar_is_dark_cached() { COLOR_TEXT_DARK_BG } else { COLOR_TEXT_LIGHT_BG };
 
-    draw_line(&mut img, font, LINE1_Y, session, 'S', COLOR_SESSION, text_color);
-    draw_line(&mut img, font, LINE2_Y, weekly, 'W', COLOR_WEEKLY, text_color);
+    debug_assert!(rows.len() <= MAX_ROWS);
+    for (i, &(label, pct, color)) in rows.iter().enumerate() {
+        let line_y = LINE1_Y + i as u32 * (LINE_HEIGHT + LINE_GAP);
+        draw_line(&mut img, font, line_y, pct, label, color, text_color);
+    }
 
     Image::new_owned(img.into_raw(), ICON_WIDTH, ICON_HEIGHT)
 }
@@ -176,38 +187,63 @@ fn draw_line(
 mod tests {
     use super::*;
 
+    /// The single-provider layout: identical input to what the pre-Vec
+    /// `generate_icon(session, weekly)` drew.
+    fn sw_rows(session: f64, weekly: f64) -> Vec<(char, f64, Rgba<u8>)> {
+        vec![
+            ('S', session, COLOR_SESSION),
+            ('W', weekly, COLOR_WEEKLY),
+        ]
+    }
+
     #[test]
     fn test_generate_icon_dimensions() {
-        let icon = generate_icon(0.5, 0.3);
+        let icon = generate_icon(sw_rows(0.5, 0.3));
         assert_eq!(icon.width(), ICON_WIDTH);
         assert_eq!(icon.height(), ICON_HEIGHT);
     }
 
     #[test]
     fn test_generate_icon_not_empty() {
-        let icon = generate_icon(0.5, 0.3);
+        let icon = generate_icon(sw_rows(0.5, 0.3));
         let rgba = icon.rgba();
         assert!(rgba.iter().any(|&b| b != 0));
     }
 
     #[test]
     fn test_generate_icon_zero() {
-        let _icon = generate_icon(0.0, 0.0);
+        let _icon = generate_icon(sw_rows(0.0, 0.0));
     }
 
     #[test]
     fn test_generate_icon_full() {
-        let _icon = generate_icon(1.0, 1.0);
+        let _icon = generate_icon(sw_rows(1.0, 1.0));
     }
 
     #[test]
     fn test_generate_icon_over_range() {
-        let _icon = generate_icon(1.5, -0.5);
+        let _icon = generate_icon(sw_rows(1.5, -0.5));
     }
 
     #[test]
-    fn test_design_fits_height() {
-        assert!(LINE2_Y + LINE_HEIGHT <= DESIGN_HEIGHT);
+    fn test_rows_fit_design_height() {
+        for i in 0..MAX_ROWS {
+            let bottom = LINE1_Y + i as u32 * (LINE_HEIGHT + LINE_GAP) + LINE_HEIGHT;
+            assert!(bottom <= DESIGN_HEIGHT);
+        }
+    }
+
+    #[test]
+    fn two_rows_paint_both_bands() {
+        // Full bars render in COLOR_CRITICAL regardless of font availability,
+        // so each 11px band must contain painted pixels — catches a row
+        // landing at the wrong Y or not rendering at all.
+        let icon = generate_icon(sw_rows(1.0, 1.0));
+        let rgba = icon.rgba();
+        let band_bytes = (ICON_WIDTH * LINE_HEIGHT * SCALE * 4) as usize;
+        let (top, bottom) = rgba.split_at(band_bytes);
+        assert!(top.iter().any(|&b| b != 0));
+        assert!(bottom.iter().any(|&b| b != 0));
     }
 
     #[test]
