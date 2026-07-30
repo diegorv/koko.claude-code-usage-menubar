@@ -1,6 +1,6 @@
 [package]
 name = "claude-code-usage-menubar"
-version = "0.3.0-alpha"
+version = "0.3.1-alpha"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
