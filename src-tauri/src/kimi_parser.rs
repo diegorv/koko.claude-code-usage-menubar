@@ -21,7 +21,7 @@ pub fn classify(status: u16, retry_after: Option<u64>, body: &str) -> ProviderPa
         // from the popup's Settings panel, it is never deleted here.
         401 | 403 => error_payload(
             ProviderStatus::AuthError,
-            "API key inválida. Update it in Settings.",
+            "Invalid API key. Update it in Settings.",
         ),
         429 => {
             let msg = match retry_after {
@@ -252,7 +252,7 @@ mod tests {
         let payload = classify(401, None, "");
         assert_eq!(payload.status, ProviderStatus::AuthError);
         assert_eq!(payload.id, "kimi");
-        assert!(payload.error_message.unwrap().contains("API key inválida"));
+        assert!(payload.error_message.unwrap().contains("Invalid API key"));
     }
 
     #[test]
