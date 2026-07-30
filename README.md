@@ -13,7 +13,7 @@ The percentages are baked into the tray icon image itself — no native menu, no
 > Pull requests and external contributions are not being accepted at this time — this is a solo project. Feel free to fork under the MIT license.
 
 > [!TIP]
-> Polls the public `/api/oauth/usage` endpoint every 2 minutes (~30 req/h). It is not an inference call and doesn't affect your usage quota.
+> Polls the public `/api/oauth/usage` endpoint every 2 minutes (~30 req/h), plus the Kimi usages endpoint at the same interval if you configure a key. Neither is an inference call, and neither affects your usage quota.
 
 ## Features
 
@@ -23,7 +23,14 @@ The percentages are baked into the tray icon image itself — no native menu, no
 - **Segmented progress bars** in the popup that mirror the tray icon layout
 - **Rust-side polling** — the refresh loop lives in the Rust backend, not the WebView, so it keeps running while the popup is hidden
 - **Throttled manual refresh** — 30s cooldown on the Refresh button with a bouncing-dots animation, backed by `LAST_FETCH` + `LAST_PAYLOAD` caches
-- **429-aware** — respects `Retry-After` headers from the Anthropic API
+- **429-aware** — respects `Retry-After` headers from both provider APIs
+- **Optional Kimi provider** — paste a Kimi API key in Settings and the popup grows a second section; the tray switches to one weekly row per provider (`C`/`K`). Without a key the app is Claude-only and makes no request to Kimi
+
+## Adding a Kimi key
+
+Optional. Open the popup, click **Settings**, paste your Kimi API key and hit **Save**.
+
+The key is stored in the macOS Keychain under the service `koko-kimi-api-key`, never in a file and never in the app's own storage. It stays on the Rust side — only booleans (`Saved` / `Not saved`) ever cross into the WebView. **Remove** deletes it and the popup drops the Kimi section on the next refresh.
 
 ## Stack
 
@@ -79,9 +86,16 @@ src/
   routes/           # SvelteKit popup route
 
 src-tauri/src/
-  commands.rs       # Tauri commands: trigger_refresh, polling loop, 30s throttle
+  commands.rs       # Tauri commands, per-provider fetch, tray rows, 30s throttle
+  parser.rs         # Shared payload types + the Claude response parser
+  kimi_parser.rs    # The Kimi response parser
   tray_icon.rs      # RGBA tray icon generator with baked-in percentages
   lib.rs            # Setup: tray, popup window, Liquid Glass material
+  state/
+    token_cache.rs  # Claude OAuth token, read via /usr/bin/security
+    kimi_key.rs     # Kimi API key, stored via /usr/bin/security
+    payload_cache.rs# Last payload + fetch timestamp behind the 30s throttle
+    poller.rs       # The native refresh timer
 ```
 
 ## Architecture notes
@@ -97,8 +111,8 @@ See [CLAUDE.md](CLAUDE.md) for the longer write-up — including the macOS trans
 ## Privacy
 
 - No analytics, no telemetry, no accounts
-- The only outbound network call is `GET https://api.anthropic.com/api/oauth/usage`, scoped by CSP in [tauri.conf.json](src-tauri/tauri.conf.json)
-- Your OAuth token stays in the macOS Keychain via `security-framework`
+- Two outbound calls, both plain GETs and both made from Rust: `https://api.anthropic.com/api/oauth/usage`, and `https://api.kimi.com/coding/v1/usages` only when a Kimi key is configured. The allowed hosts are enforced by the [privacy workflow](.github/workflows/privacy.yml), which fails CI on any new host — not by the CSP in `tauri.conf.json`, which governs the WebView and never sees these requests
+- Your Claude OAuth token and your Kimi API key both stay in the macOS Keychain, read and written by shelling out to `/usr/bin/security`. Neither ever crosses into the WebView, and the Kimi key is passed to that subprocess on stdin so it never appears in a process argument list
 
 ## IDE Setup
 
