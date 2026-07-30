@@ -29,10 +29,11 @@ async fn fetch_usage_payload(token_cache: &TokenCache, payload_cache: &PayloadCa
 
     let (claude, kimi) = tokio::join!(fetch_claude_provider(token_cache), fetch_kimi_provider());
 
+    let claude_ok = claude.status == ProviderStatus::Ok;
     let mut providers = vec![claude];
     providers.extend(kimi);
     let payload = UsagePayload::new(providers);
-    if payload.providers[0].status == ProviderStatus::Ok {
+    if claude_ok {
         payload_cache.store(payload.clone());
     }
 
@@ -151,7 +152,8 @@ async fn fetch_kimi_provider() -> Option<ProviderPayload> {
 ///
 /// Returns None when no provider is ok, leaving the icon untouched: it's a
 /// single baked image showing nothing fresh, so the freeze-on-error semantics
-/// the Claude-only tray has always had still apply.
+/// the Claude-only tray has always had still apply. At most MAX_ROWS rows are
+/// returned — more would paint outside the 22px design height.
 fn tray_rows(payload: &UsagePayload) -> Option<Vec<(char, f64, Rgba<u8>)>> {
     let ok: Vec<&ProviderPayload> = payload
         .providers
@@ -178,6 +180,7 @@ fn tray_rows(payload: &UsagePayload) -> Option<Vec<(char, f64, Rgba<u8>)>> {
     }
     Some(
         ok.iter()
+            .take(crate::tray_icon::MAX_ROWS)
             .map(|p| {
                 let (label, color) = match p.id.as_str() {
                     "kimi" => ('K', crate::tray_icon::COLOR_KIMI),
@@ -197,6 +200,13 @@ fn update_tray_icon(app: &AppHandle, payload: &UsagePayload) {
     if let Some(tray) = app.tray_by_id("main-tray") {
         let _ = tray.set_icon(Some(icon));
         let _ = tray.set_title(None::<&str>);
+        // The builder-time tooltip predates the second provider.
+        let tooltip = if payload.providers.len() > 1 {
+            "Claude + Kimi Usage"
+        } else {
+            "Claude Usage"
+        };
+        let _ = tray.set_tooltip(Some(tooltip));
     }
 }
 
@@ -401,6 +411,21 @@ mod tests {
             provider("kimi", ProviderStatus::AuthError, 0, 0),
         ]);
         assert!(tray_rows(&payload).is_none());
+    }
+
+    #[test]
+    fn rows_are_capped_at_max_rows() {
+        // A third ok provider would paint below the 22px design height — it
+        // drops out instead of clipping silently.
+        let payload = UsagePayload::new(vec![
+            provider("claude", ProviderStatus::Ok, 45, 67),
+            provider("kimi", ProviderStatus::Ok, 96, 19),
+            provider("other", ProviderStatus::Ok, 10, 20),
+        ]);
+        let rows = tray_rows(&payload).unwrap();
+        assert_eq!(rows.len(), crate::tray_icon::MAX_ROWS);
+        assert_eq!(rows[0].0, 'C');
+        assert_eq!(rows[1].0, 'K');
     }
 
     #[test]

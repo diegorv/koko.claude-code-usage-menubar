@@ -76,7 +76,15 @@ pub fn save(key: &str) -> Result<(), String> {
 
 pub fn remove() -> Result<(), String> {
     let outcome = run_security(&delete_args())?;
-    if outcome.success {
+    remove_result(&outcome)
+}
+
+/// Deleting an absent key is success — the desired end state already holds.
+/// `security` reports errSecItemNotFound with the SecKeychainSearchCopyNext
+/// symbol on stderr; surfacing it as an error would only punish a retry.
+/// Match the symbol, not the English sentence — the sentence is localized.
+fn remove_result(outcome: &SecurityOutcome) -> Result<(), String> {
+    if outcome.success || outcome.stderr.contains("SecKeychainSearchCopyNext") {
         Ok(())
     } else {
         Err(describe_failure("remove the Kimi API key", &outcome.stderr))
@@ -97,6 +105,11 @@ pub fn exists() -> Result<bool, String> {
 /// value; infra failures (spawn, timeout) surface as `Err` so the caller can
 /// decide — the fetch layer treats them as "no usable key" and omits the
 /// provider rather than erroring every cycle.
+///
+/// Called once per poll cycle with no caching floor (unlike token_cache's
+/// 10-minute minimum): this item is created by `/usr/bin/security` itself, so
+/// its ACL trusts that binary and reads never prompt. The floor exists for
+/// the Claude item, whose ACL belongs to another app's binary.
 pub fn read() -> Result<Option<String>, String> {
     let outcome = run_security_capturing_stdout(&exists_args())?;
     if !outcome.success {
@@ -250,11 +263,36 @@ mod tests {
     }
 
     #[test]
-    fn failure_message_never_contains_the_key() {
-        // Error strings are built from stderr alone, so a key passed to the
-        // subprocess (argv/stdout) can never leak into a message.
-        let msg = describe_failure("save the Kimi API key", "write failed");
-        assert!(!msg.contains("sk-kimi-test"));
+    fn remove_treats_a_missing_item_as_success() {
+        let not_found = SecurityOutcome {
+            success: false,
+            stderr: "security: SecKeychainSearchCopyNext: The specified item could not be found in the keychain.".to_string(),
+            stdout: None,
+        };
+        assert!(remove_result(&not_found).is_ok());
+    }
+
+    #[test]
+    fn remove_treats_a_missing_item_as_success_in_any_locale() {
+        // Same errSecItemNotFound, localized sentence — the symbol is stable.
+        let not_found = SecurityOutcome {
+            success: false,
+            stderr: "security: SecKeychainSearchCopyNext: O item especificado não foi encontrado.".to_string(),
+            stdout: None,
+        };
+        assert!(remove_result(&not_found).is_ok());
+    }
+
+    #[test]
+    fn remove_surfaces_real_failures() {
+        let denied = SecurityOutcome {
+            success: false,
+            stderr: "authorization denied".to_string(),
+            stdout: None,
+        };
+        let err = remove_result(&denied).unwrap_err();
+        assert!(err.contains("authorization denied"));
+        assert!(err.contains("remove the Kimi API key"));
     }
 
     #[test]

@@ -28,7 +28,7 @@ const LINE_GAP: u32 = 0;
 const LINE1_Y: u32 = 0;
 /// Rows that fit the design height: S/W for a single provider, or one weekly
 /// row per provider when several are active.
-const MAX_ROWS: usize = 2;
+pub(crate) const MAX_ROWS: usize = 2;
 
 // Bar layout
 const NUM_SEGMENTS: u32 = 10;

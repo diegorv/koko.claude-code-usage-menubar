@@ -30,12 +30,15 @@
 	async function toggleSettings() {
 		settingsOpen = !settingsOpen;
 		kimiKeyError = '';
-		if (settingsOpen) {
-			try {
-				hasKimiKey = await invoke<boolean>('has_kimi_key');
-			} catch {
-				hasKimiKey = false;
-			}
+		if (!settingsOpen) {
+			// Drop an unsubmitted draft so a pasted key doesn't linger in the DOM.
+			kimiKeyInput = '';
+			return;
+		}
+		try {
+			hasKimiKey = await invoke<boolean>('has_kimi_key');
+		} catch {
+			hasKimiKey = false;
 		}
 	}
 
