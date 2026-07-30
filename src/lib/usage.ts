@@ -51,6 +51,9 @@ export function formatTimeRemaining(iso: string | undefined): string {
 	if (!iso) return '';
 	const now = Date.now();
 	const target = new Date(iso).getTime();
+	// An unparseable timestamp makes every comparison below false and the
+	// popup rendered "Resets in NaNm". Reset times come straight off the wire.
+	if (Number.isNaN(target)) return '';
 	const diff = target - now;
 
 	if (diff <= 0) return 'Now';
