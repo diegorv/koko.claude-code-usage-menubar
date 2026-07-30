@@ -20,14 +20,38 @@ const KIMI_API_URL: &str = "https://api.kimi.com/coding/v1/usages";
 
 // --- Usage fetching (internal) ---
 
+/// Runs a blocking keychain call on the blocking pool. Both providers start
+/// with one, and `/usr/bin/security` can take up to SECURITY_CMD_TIMEOUT to
+/// answer — long enough to matter for a worker thread.
+async fn on_keychain_thread<F, R>(work: F) -> Result<R, String>
+where
+    F: FnOnce() -> R + Send + 'static,
+    R: Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|e| format!("Keychain task failed: {}", e))
+}
+
 /// Fetches both providers concurrently and assembles one payload. Claude is
 /// always providers[0] (the tray reads it); Kimi is appended when a key is
 /// configured and omitted entirely otherwise, so a keyless install behaves
 /// exactly as a Claude-only build.
-async fn fetch_usage_payload(token_cache: &TokenCache, payload_cache: &PayloadCache) -> UsagePayload {
+///
+/// Takes the `AppHandle` rather than the state refs so each provider's
+/// keychain read can be moved to the blocking pool, which needs an owned
+/// 'static handle. Without that the `join!` below was concurrent in name
+/// only: it polls in order, and each branch opened with a synchronous
+/// subprocess, so the two reads ran back to back before either request went
+/// out.
+async fn fetch_usage_payload(app: &AppHandle) -> UsagePayload {
+    let payload_cache = app.state::<PayloadCache>();
     payload_cache.mark_fetch_start();
 
-    let (claude, kimi) = tokio::join!(fetch_claude_provider(token_cache), fetch_kimi_provider());
+    let (claude, kimi) = tokio::join!(
+        fetch_claude_provider(app.clone()),
+        fetch_kimi_provider()
+    );
 
     let claude_ok = claude.status == ProviderStatus::Ok;
     let mut providers = vec![claude];
@@ -40,10 +64,12 @@ async fn fetch_usage_payload(token_cache: &TokenCache, payload_cache: &PayloadCa
     payload
 }
 
-async fn fetch_claude_provider(token_cache: &TokenCache) -> ProviderPayload {
-    let token = match token_cache.get_or_read() {
-        Ok(t) => t,
-        Err(e) => {
+async fn fetch_claude_provider(app: AppHandle) -> ProviderPayload {
+    let read_app = app.clone();
+    let token = match on_keychain_thread(move || read_app.state::<TokenCache>().get_or_read()).await
+    {
+        Ok(Ok(t)) => t,
+        Err(e) | Ok(Err(e)) => {
             let status = if e.contains("Failed to read keychain") || e.contains("No accessToken") {
                 ProviderStatus::AuthError
             } else {
@@ -90,7 +116,7 @@ async fn fetch_claude_provider(token_cache: &TokenCache) -> ProviderPayload {
     let provider = parser::classify(status, retry_after, &body);
 
     if provider.status == ProviderStatus::AuthError {
-        token_cache.invalidate();
+        app.state::<TokenCache>().invalidate();
     }
 
     provider
@@ -102,8 +128,8 @@ async fn fetch_claude_provider(token_cache: &TokenCache) -> ProviderPayload {
 /// heals on the next cycle. On 401 the key is kept (kimi_parser classifies;
 /// nobody deletes).
 async fn fetch_kimi_provider() -> Option<ProviderPayload> {
-    let key = match crate::state::kimi_key::read() {
-        Ok(Some(key)) => key,
+    let key = match on_keychain_thread(crate::state::kimi_key::read).await {
+        Ok(Ok(Some(key))) => key,
         _ => return None,
     };
 
@@ -211,9 +237,7 @@ fn update_tray_icon(app: &AppHandle, payload: &UsagePayload) {
 }
 
 pub async fn do_refresh_cycle(app: &AppHandle) {
-    let token_cache = app.state::<TokenCache>();
-    let payload_cache = app.state::<PayloadCache>();
-    let payload = fetch_usage_payload(&token_cache, &payload_cache).await;
+    let payload = fetch_usage_payload(app).await;
     update_tray_icon(app, &payload);
     let _ = app.emit("usage_updated", &payload);
 }
@@ -242,16 +266,15 @@ pub fn start_auto_refresh(
 /// Triggers a single immediate refresh and returns the data to the caller.
 /// Skips the API call if data was fetched less than MIN_FETCH_INTERVAL_SECS ago.
 #[tauri::command]
-pub async fn trigger_refresh(
-    app: AppHandle,
-    token_cache: State<'_, TokenCache>,
-    payload_cache: State<'_, PayloadCache>,
-) -> Result<UsagePayload, String> {
-    if let Some(cached) = payload_cache.cached_if_fresh(MIN_FETCH_INTERVAL_SECS) {
+pub async fn trigger_refresh(app: AppHandle) -> Result<UsagePayload, String> {
+    if let Some(cached) = app
+        .state::<PayloadCache>()
+        .cached_if_fresh(MIN_FETCH_INTERVAL_SECS)
+    {
         return Ok(cached);
     }
 
-    let payload = fetch_usage_payload(&token_cache, &payload_cache).await;
+    let payload = fetch_usage_payload(&app).await;
     update_tray_icon(&app, &payload);
     Ok(payload)
 }
@@ -273,21 +296,10 @@ pub fn quit_app(app: AppHandle) {
 
 // --- Kimi API key management ---
 
-/// Every keychain call here shells out to `/usr/bin/security` and can take up
-/// to SECURITY_CMD_TIMEOUT to answer. `#[tauri::command]` on a *non-async* fn
-/// compiles to a blocking handler that runs inline on the IPC thread, so a
-/// slow keychain would freeze the whole app. These are async and hand the
-/// subprocess to the blocking pool instead.
-async fn on_keychain_thread<F, R>(work: F) -> Result<R, String>
-where
-    F: FnOnce() -> R + Send + 'static,
-    R: Send + 'static,
-{
-    tauri::async_runtime::spawn_blocking(work)
-        .await
-        .map_err(|e| format!("Keychain task failed: {}", e))
-}
-
+/// These three are async for the same reason `on_keychain_thread` exists:
+/// `#[tauri::command]` on a *non-async* fn compiles to a blocking handler that
+/// runs inline on the IPC thread, so a slow keychain would freeze the app.
+///
 /// Stores the Kimi API key in the macOS Keychain (updates in place). On
 /// success, spawns a refresh cycle so the popup gains the Kimi section via
 /// `usage_updated` immediately — `trigger_refresh`'s 30s throttle would
