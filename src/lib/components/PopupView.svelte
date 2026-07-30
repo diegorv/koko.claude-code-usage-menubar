@@ -213,6 +213,14 @@
 								<ProgressBar percent={extra.percent} color={barColor(extra.percent, '#4db6a0')} />
 							{/if}
 						</div>
+					{:else if provider.extra.kind === 'parallel'}
+						{@const extra = provider.extra}
+						<div class="usage-row">
+							<div class="usage-label">
+								<span>Parallel Sessions</span>
+								<span class="percent">{extra.used}/{extra.limit}</span>
+							</div>
+						</div>
 					{/if}
 				</section>
 

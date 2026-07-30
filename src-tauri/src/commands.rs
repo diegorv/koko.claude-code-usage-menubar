@@ -1,6 +1,7 @@
 use std::sync::LazyLock;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use crate::kimi_parser;
 use crate::parser::{self, ProviderPayload, ProviderStatus, UsagePayload};
 use crate::state::{PayloadCache, TokenCache, UsagePoller};
 
@@ -14,12 +15,30 @@ static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
 
 const MIN_FETCH_INTERVAL_SECS: u64 = 30;
 const USAGE_API_URL: &str = "https://api.anthropic.com/api/oauth/usage";
+const KIMI_API_URL: &str = "https://api.kimi.com/coding/v1/usages";
 
 // --- Usage fetching (internal) ---
 
+/// Fetches both providers concurrently and assembles one payload. Claude is
+/// always providers[0] (the tray reads it); Kimi is appended when a key is
+/// configured and omitted entirely otherwise, so a keyless install behaves
+/// exactly as a Claude-only build.
 async fn fetch_usage_payload(token_cache: &TokenCache, payload_cache: &PayloadCache) -> UsagePayload {
     payload_cache.mark_fetch_start();
 
+    let (claude, kimi) = tokio::join!(fetch_claude_provider(token_cache), fetch_kimi_provider());
+
+    let mut providers = vec![claude];
+    providers.extend(kimi);
+    let payload = UsagePayload::new(providers);
+    if payload.providers[0].status == ProviderStatus::Ok {
+        payload_cache.store(payload.clone());
+    }
+
+    payload
+}
+
+async fn fetch_claude_provider(token_cache: &TokenCache) -> ProviderPayload {
     let token = match token_cache.get_or_read() {
         Ok(t) => t,
         Err(e) => {
@@ -28,7 +47,7 @@ async fn fetch_usage_payload(token_cache: &TokenCache, payload_cache: &PayloadCa
             } else {
                 ProviderStatus::Error
             };
-            return UsagePayload::single(ProviderPayload::claude_error(status, &e));
+            return ProviderPayload::claude_error(status, &e);
         }
     };
 
@@ -43,7 +62,58 @@ async fn fetch_usage_payload(token_cache: &TokenCache, payload_cache: &PayloadCa
     {
         Ok(r) => r,
         Err(e) => {
-            return UsagePayload::single(ProviderPayload::claude_error(
+            return ProviderPayload::claude_error(
+                ProviderStatus::Error,
+                &format!("Request failed: {}", e),
+            )
+        }
+    };
+
+    let status = response.status().as_u16();
+    let retry_after = response
+        .headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok());
+    let body = match response.text().await {
+        Ok(b) => b,
+        Err(e) => {
+            return ProviderPayload::claude_error(
+                ProviderStatus::Error,
+                &format!("Failed to read response: {}", e),
+            )
+        }
+    };
+
+    let provider = parser::classify(status, retry_after, &body);
+
+    if provider.status == ProviderStatus::AuthError {
+        token_cache.invalidate();
+    }
+
+    provider
+}
+
+/// `None` when no key is usable — the provider is omitted from the payload,
+/// never rendered as an error. A keychain infra failure reads as "no key":
+/// the alternative is an error row every poll for a condition that usually
+/// heals on the next cycle. On 401 the key is kept (kimi_parser classifies;
+/// nobody deletes).
+async fn fetch_kimi_provider() -> Option<ProviderPayload> {
+    let key = match crate::state::kimi_key::read() {
+        Ok(Some(key)) => key,
+        _ => return None,
+    };
+
+    let response = match HTTP_CLIENT
+        .get(KIMI_API_URL)
+        .header("Authorization", format!("Bearer {}", key))
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            return Some(kimi_parser::error_payload(
                 ProviderStatus::Error,
                 &format!("Request failed: {}", e),
             ))
@@ -59,24 +129,14 @@ async fn fetch_usage_payload(token_cache: &TokenCache, payload_cache: &PayloadCa
     let body = match response.text().await {
         Ok(b) => b,
         Err(e) => {
-            return UsagePayload::single(ProviderPayload::claude_error(
+            return Some(kimi_parser::error_payload(
                 ProviderStatus::Error,
                 &format!("Failed to read response: {}", e),
             ))
         }
     };
 
-    let provider = parser::classify(status, retry_after, &body);
-
-    if provider.status == ProviderStatus::AuthError {
-        token_cache.invalidate();
-    }
-    let payload = UsagePayload::single(provider);
-    if payload.providers[0].status == ProviderStatus::Ok {
-        payload_cache.store(payload.clone());
-    }
-
-    payload
+    Some(kimi_parser::classify(status, retry_after, &body))
 }
 
 // --- Refresh cycle ---

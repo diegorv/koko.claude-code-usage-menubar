@@ -87,21 +87,62 @@ pub fn exists() -> Result<bool, String> {
     Ok(outcome.success)
 }
 
+/// Reads the stored key into process memory. Unlike `exists`, stdout — the
+/// secret — is piped instead of nulled. The value is for the Rust fetch layer
+/// only: it must never cross IPC, and error strings stay stderr-only.
+///
+/// `Ok(None)` covers both "no item stored" (errSecItemNotFound) and a blank
+/// value; infra failures (spawn, timeout) surface as `Err` so the caller can
+/// decide — the fetch layer treats them as "no usable key" and omits the
+/// provider rather than erroring every cycle.
+pub fn read() -> Result<Option<String>, String> {
+    let outcome = run_security_capturing_stdout(&exists_args())?;
+    if !outcome.success {
+        return Ok(None);
+    }
+    let key = outcome.stdout.unwrap_or_default().trim().to_string();
+    if key.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(key))
+}
+
 struct SecurityOutcome {
     success: bool,
     stderr: String,
+    /// Present only when the run captured stdout — see `read`.
+    stdout: Option<String>,
 }
 
 #[cfg(target_os = "macos")]
 fn run_security(args: &[String]) -> Result<SecurityOutcome, String> {
+    run_security_impl(args, false)
+}
+
+/// Same as `run_security`, but stdout is piped and returned. Only `read`
+/// uses this: for every other invocation stdout can carry the secret, so it
+/// stays nulled.
+#[cfg(target_os = "macos")]
+fn run_security_capturing_stdout(args: &[String]) -> Result<SecurityOutcome, String> {
+    run_security_impl(args, true)
+}
+
+#[cfg(target_os = "macos")]
+fn run_security_impl(args: &[String], capture_stdout: bool) -> Result<SecurityOutcome, String> {
     use std::io::Read;
     use std::process::{Command, Stdio};
     use std::time::Instant;
 
+    let stdout_cfg = if capture_stdout {
+        Stdio::piped()
+    } else {
+        // stdout is nulled, never piped: for `find -w` it carries the secret.
+        Stdio::null()
+    };
+
     let mut child = Command::new("/usr/bin/security")
         .args(args)
-        // stdout is nulled, never piped: for `find -w` it carries the secret.
-        .stdout(Stdio::null())
+        .stdout(stdout_cfg)
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("Failed to run security: {}", e))?;
@@ -126,14 +167,30 @@ fn run_security(args: &[String]) -> Result<SecurityOutcome, String> {
         let _ = pipe.read_to_string(&mut stderr);
     }
 
+    let stdout = if capture_stdout {
+        let mut buf = String::new();
+        if let Some(mut pipe) = child.stdout.take() {
+            let _ = pipe.read_to_string(&mut buf);
+        }
+        Some(buf)
+    } else {
+        None
+    };
+
     Ok(SecurityOutcome {
         success: status.success(),
         stderr,
+        stdout,
     })
 }
 
 #[cfg(not(target_os = "macos"))]
 fn run_security(_args: &[String]) -> Result<SecurityOutcome, String> {
+    Err("Keychain access only available on macOS".to_string())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn run_security_capturing_stdout(_args: &[String]) -> Result<SecurityOutcome, String> {
     Err("Keychain access only available on macOS".to_string())
 }
 

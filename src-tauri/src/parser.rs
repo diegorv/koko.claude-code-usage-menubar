@@ -26,25 +26,28 @@ pub struct ProviderPayload {
 /// `Error` is the catch-all for failures that are neither auth nor rate-limit
 /// (5xx, network, invalid JSON) — those paths predate the providers[] shape
 /// and keep their existing messages. `Disabled` is reserved for providers with
-/// no credentials configured; Claude never emits it today.
+/// no credentials configured; nothing emits it today — issue 03 chose to omit
+/// a keyless provider from providers[] instead, so a never-configured provider
+/// leaves no trace in the popup.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderStatus {
     Ok,
     AuthError,
     RateLimited,
-    // Constructed once a second provider can be configured-but-keyless (issue 03).
+    // Reserved; see the enum-level comment above.
     #[allow(dead_code)]
     Disabled,
     Error,
 }
 
 /// Provider-specific metrics, tagged so the frontend can narrow by `kind`.
-/// Claude reports Extra Usage; other providers add their own variants.
+/// Claude reports Extra Usage; Kimi reports parallel sessions.
 #[derive(Clone, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProviderExtra {
     ExtraUsage { enabled: bool, percent: u32 },
+    Parallel { used: u32, limit: u32 },
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -59,10 +62,11 @@ const CLAUDE_ID: &str = "claude";
 const CLAUDE_TITLE: &str = "Claude Usage";
 
 impl UsagePayload {
-    /// Wraps a single provider's result into the payload sent to the frontend.
-    pub fn single(provider: ProviderPayload) -> Self {
+    /// Assembles the payload from per-provider results. Provider order is the
+    /// caller's choice; the tray reads `providers[0]`, so Claude goes first.
+    pub fn new(providers: Vec<ProviderPayload>) -> Self {
         Self {
-            providers: vec![provider],
+            providers,
             last_updated_at: now_millis(),
         }
     }
@@ -463,11 +467,50 @@ mod tests {
     }
 
     #[test]
-    fn single_provider_assembly_wraps_one_provider() {
-        let payload = UsagePayload::single(classify(200, None, OK_BODY));
+    fn new_assembly_wraps_one_provider() {
+        let payload = UsagePayload::new(vec![classify(200, None, OK_BODY)]);
         assert_eq!(payload.providers.len(), 1);
         assert_eq!(payload.providers[0].id, "claude");
         assert!(payload.last_updated_at > 0);
+    }
+
+    #[test]
+    fn new_assembly_keeps_provider_order() {
+        let claude = classify(200, None, OK_BODY);
+        let kimi = ProviderPayload {
+            id: "kimi".to_string(),
+            title: "Kimi Usage".to_string(),
+            status: ProviderStatus::Ok,
+            session_percent: 96,
+            session_resets_at: None,
+            weekly_percent: 19,
+            weekly_resets_at: None,
+            models: vec![],
+            extra: ProviderExtra::Parallel {
+                used: 6,
+                limit: 30,
+            },
+            error_message: None,
+            shape_warning: None,
+        };
+        let payload = UsagePayload::new(vec![claude, kimi]);
+        assert_eq!(payload.providers.len(), 2);
+        // Claude stays first — the tray reads providers[0].
+        assert_eq!(payload.providers[0].id, "claude");
+        assert_eq!(payload.providers[1].id, "kimi");
+    }
+
+    #[test]
+    fn parallel_extra_serializes_tagged() {
+        let value = serde_json::to_value(ProviderExtra::Parallel {
+            used: 6,
+            limit: 30,
+        })
+        .unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({"kind": "parallel", "used": 6, "limit": 30})
+        );
     }
 
     #[test]
@@ -488,7 +531,7 @@ mod tests {
     /// identity, tagged `extra`, top-level `lastUpdatedAt`.
     #[test]
     fn serialized_payload_has_expected_shape() {
-        let payload = UsagePayload::single(classify(200, None, OK_BODY));
+        let payload = UsagePayload::new(vec![classify(200, None, OK_BODY)]);
         let value = serde_json::to_value(&payload).unwrap();
 
         assert!(value.get("lastUpdatedAt").is_some());

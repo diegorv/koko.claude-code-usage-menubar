@@ -51,7 +51,7 @@ mod tests {
     use crate::parser::{ProviderPayload, ProviderStatus};
 
     fn payload(status: ProviderStatus) -> UsagePayload {
-        UsagePayload::single(ProviderPayload::claude_error(status, "marker"))
+        UsagePayload::new(vec![ProviderPayload::claude_error(status, "marker")])
     }
 
     #[test]
@@ -82,14 +82,14 @@ mod tests {
     #[test]
     fn store_overwrites_previous() {
         let cache = PayloadCache::new();
-        cache.store(UsagePayload::single(ProviderPayload::claude_error(
+        cache.store(UsagePayload::new(vec![ProviderPayload::claude_error(
             ProviderStatus::Error,
             "first",
-        )));
-        cache.store(UsagePayload::single(ProviderPayload::claude_error(
+        )]));
+        cache.store(UsagePayload::new(vec![ProviderPayload::claude_error(
             ProviderStatus::Error,
             "second",
-        )));
+        )]));
         assert_eq!(
             cache.get().unwrap().providers[0].error_message.as_deref(),
             Some("second")

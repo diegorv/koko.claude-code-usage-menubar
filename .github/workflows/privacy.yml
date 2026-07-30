@@ -131,6 +131,9 @@ jobs:
             # in the tray and popup. Defined as USAGE_API_URL in
             # src/commands.rs and called with the keychain OAuth token.
             api\.anthropic\.com
+            # The Kimi usage endpoint: KIMI_API_URL in src/commands.rs,
+            # called with the Keychain-stored API key (kimi_key.rs).
+            api\.kimi\.com
             # The sanctioned HTTP client. It is only ever pointed at the
-            # host above; a new host would surface as its own match.
+            # hosts above; a new host would surface as its own match.
             reqwest
