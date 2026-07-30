@@ -273,14 +273,29 @@ pub fn quit_app(app: AppHandle) {
 
 // --- Kimi API key management ---
 
+/// Every keychain call here shells out to `/usr/bin/security` and can take up
+/// to SECURITY_CMD_TIMEOUT to answer. `#[tauri::command]` on a *non-async* fn
+/// compiles to a blocking handler that runs inline on the IPC thread, so a
+/// slow keychain would freeze the whole app. These are async and hand the
+/// subprocess to the blocking pool instead.
+async fn on_keychain_thread<F, R>(work: F) -> Result<R, String>
+where
+    F: FnOnce() -> R + Send + 'static,
+    R: Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|e| format!("Keychain task failed: {}", e))
+}
+
 /// Stores the Kimi API key in the macOS Keychain (updates in place). On
 /// success, spawns a refresh cycle so the popup gains the Kimi section via
 /// `usage_updated` immediately — `trigger_refresh`'s 30s throttle would
 /// otherwise keep serving the pre-save payload and the save would look
 /// failed. `do_refresh_cycle` is the poll path and has no throttle.
 #[tauri::command]
-pub fn save_kimi_key(app: AppHandle, key: String) -> Result<(), String> {
-    crate::state::kimi_key::save(&key)?;
+pub async fn save_kimi_key(app: AppHandle, key: String) -> Result<(), String> {
+    on_keychain_thread(move || crate::state::kimi_key::save(&key)).await??;
     tauri::async_runtime::spawn(async move {
         do_refresh_cycle(&app).await;
     });
@@ -291,8 +306,8 @@ pub fn save_kimi_key(app: AppHandle, key: String) -> Result<(), String> {
 /// refresh cycle so the popup drops the Kimi section immediately (same
 /// throttle rationale as `save_kimi_key`).
 #[tauri::command]
-pub fn delete_kimi_key(app: AppHandle) -> Result<(), String> {
-    crate::state::kimi_key::remove()?;
+pub async fn delete_kimi_key(app: AppHandle) -> Result<(), String> {
+    on_keychain_thread(crate::state::kimi_key::remove).await??;
     tauri::async_runtime::spawn(async move {
         do_refresh_cycle(&app).await;
     });
@@ -303,8 +318,10 @@ pub fn delete_kimi_key(app: AppHandle) -> Result<(), String> {
 /// boundary — booleans only. Keychain infrastructure errors (e.g. a timed-out
 /// `security` call) read as "no key" so the indicator never throws.
 #[tauri::command]
-pub fn has_kimi_key() -> bool {
-    crate::state::kimi_key::exists().unwrap_or(false)
+pub async fn has_kimi_key() -> bool {
+    on_keychain_thread(|| crate::state::kimi_key::exists().unwrap_or(false))
+        .await
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
