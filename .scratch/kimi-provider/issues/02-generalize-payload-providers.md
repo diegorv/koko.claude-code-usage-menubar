@@ -1,6 +1,6 @@
 # 02 — Generalize UsagePayload to providers[]
 
-Status: ready-for-agent
+Status: done
 
 ## What to build
 
@@ -13,10 +13,10 @@ Pure refactor: turn the single-provider `UsagePayload` (fixed `session_percent`/
 
 ## Acceptance criteria
 
-- [ ] All existing fixture-based parser tests pass unchanged (same Claude numbers)
+- [x] All existing fixture-based parser tests pass unchanged (same Claude numbers)
 - [ ] Popup renders Claude section identically to before (visual check)
-- [ ] Tray icon unchanged
-- [ ] `cargo test`, `cargo check`, `pnpm check` pass
+- [x] Tray icon unchanged
+- [x] `cargo test`, `cargo check`, `pnpm check` pass
 
 ## Blocked by
 
@@ -26,3 +26,11 @@ None - can start immediately (parallel with issue 01)
 
 - No Kimi fetching or parsing (issue 03).
 - No tray layout changes (issue 04).
+
+## Comments
+
+Shipped in 0b6ded9.
+
+Left unchecked: the popup visual check against the pre-refactor Claude
+section. The parser tests prove the numbers are identical; only a running app
+proves the rendering is.
