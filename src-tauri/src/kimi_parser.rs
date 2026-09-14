@@ -44,7 +44,7 @@ pub fn error_payload(status: ProviderStatus, message: &str) -> ProviderPayload {
         id: KIMI_ID.to_string(),
         title: KIMI_TITLE.to_string(),
         status,
-        session_percent: 0,
+        session_percent: Some(0),
         session_resets_at: None,
         weekly_percent: 0,
         weekly_resets_at: None,
@@ -95,7 +95,7 @@ pub(crate) fn parse_api_response(json: &serde_json::Value) -> ProviderPayload {
         id: KIMI_ID.to_string(),
         title: KIMI_TITLE.to_string(),
         status: ProviderStatus::Ok,
-        session_percent: quota_percent(&detail),
+        session_percent: Some(quota_percent(&detail)),
         session_resets_at: detail["resetTime"].as_str().map(String::from),
         weekly_percent: quota_percent(&json["usage"]),
         weekly_resets_at: json["usage"]["resetTime"].as_str().map(String::from),
@@ -170,7 +170,7 @@ mod tests {
         assert_eq!(payload.title, "Kimi Usage");
 
         // The 300-minute limit's detail: "96"/"100" → 96%.
-        assert_eq!(payload.session_percent, 96);
+        assert_eq!(payload.session_percent, Some(96));
         assert_eq!(
             payload.session_resets_at.as_deref(),
             Some("2026-07-29T22:59:17.868440Z")
@@ -208,7 +208,7 @@ mod tests {
         assert!(payload.shape_warning.is_some());
         // Weekly still parsed — a shape change shouldn't blank the popup.
         assert_eq!(payload.weekly_percent, 19);
-        assert_eq!(payload.session_percent, 0);
+        assert_eq!(payload.session_percent, Some(0));
     }
 
     #[test]
@@ -217,7 +217,7 @@ mod tests {
             &serde_json::json!({"limits": [session_limit("100", "50")]}),
         );
         assert!(payload.shape_warning.is_some());
-        assert_eq!(payload.session_percent, 50);
+        assert_eq!(payload.session_percent, Some(50));
         assert_eq!(payload.weekly_percent, 0);
     }
 
@@ -243,7 +243,7 @@ mod tests {
             ],
             "usage": {"limit": "100", "used": "19"},
         }));
-        assert_eq!(payload.session_percent, 96);
+        assert_eq!(payload.session_percent, Some(96));
         assert_eq!(payload.shape_warning, None);
     }
 
@@ -257,7 +257,7 @@ mod tests {
             "usage": {"limit": "100", "used": "19"},
         }));
         assert!(payload.shape_warning.is_some());
-        assert_eq!(payload.session_percent, 0);
+        assert_eq!(payload.session_percent, Some(0));
         // Weekly is independent and still parsed.
         assert_eq!(payload.weekly_percent, 19);
     }
@@ -274,7 +274,7 @@ mod tests {
             "usage": {"limit": "100", "used": "19"},
         }));
         assert!(payload.shape_warning.is_some());
-        assert_eq!(payload.session_percent, 0);
+        assert_eq!(payload.session_percent, Some(0));
     }
 
     #[test]
@@ -284,7 +284,7 @@ mod tests {
             "usage": {"limit": "100", "used": "19"},
         }));
         // 1/3 = 33.33… → 33.
-        assert_eq!(payload.session_percent, 33);
+        assert_eq!(payload.session_percent, Some(33));
     }
 
     #[test]
@@ -293,7 +293,7 @@ mod tests {
             "limits": [session_limit("100", "140")],
             "usage": {"limit": "100", "used": "19"},
         }));
-        assert_eq!(payload.session_percent, 100);
+        assert_eq!(payload.session_percent, Some(100));
     }
 
     #[test]
@@ -302,7 +302,7 @@ mod tests {
             "limits": [session_limit("0", "0")],
             "usage": {"limit": "100", "used": "19"},
         }));
-        assert_eq!(payload.session_percent, 0);
+        assert_eq!(payload.session_percent, Some(0));
     }
 
     #[test]
@@ -311,7 +311,7 @@ mod tests {
             "limits": [numeric_session_limit(100, 40)],
             "usage": {"limit": "100", "used": "19"},
         }));
-        assert_eq!(payload.session_percent, 40);
+        assert_eq!(payload.session_percent, Some(40));
     }
 
     #[test]

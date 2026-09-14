@@ -308,7 +308,9 @@ fn tray_rows(
                 let (label, color, _) = tray_identity(&p.id);
                 (
                     label,
-                    p.session_percent as f64 / 100.0,
+                    // A weekly-only plan has no session figure; the grid row
+                    // still needs one, and an empty bar is the honest one.
+                    p.session_percent.unwrap_or(0) as f64 / 100.0,
                     p.weekly_percent as f64 / 100.0,
                     color,
                 )
@@ -471,7 +473,7 @@ mod tests {
             id: id.to_string(),
             title: format!("{} Usage", id),
             status,
-            session_percent: session,
+            session_percent: Some(session),
             session_resets_at: None,
             weekly_percent: weekly,
             weekly_resets_at: None,

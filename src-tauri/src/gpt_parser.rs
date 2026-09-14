@@ -48,7 +48,7 @@ pub fn error_payload(status: ProviderStatus, message: &str) -> ProviderPayload {
         id: GPT_ID.to_string(),
         title: GPT_TITLE.to_string(),
         status,
-        session_percent: 0,
+        session_percent: Some(0),
         session_resets_at: None,
         weekly_percent: 0,
         weekly_resets_at: None,
@@ -73,7 +73,22 @@ fn find_window(json: &serde_json::Value, secs: u64) -> Option<&serde_json::Value
 pub(crate) fn parse_api_response(json: &serde_json::Value) -> ProviderPayload {
     let session = find_window(json, SESSION_WINDOW_SECS);
     let weekly = find_window(json, WEEKLY_WINDOW_SECS);
-    let shape_warning = (session.is_none() || weekly.is_none()).then(|| {
+    // A missing session window is not drift: since July 2026 some plans get
+    // only the weekly window, in `primary_window`, with `secondary_window:
+    // null`. What still warns is a missing weekly window, or a window of a
+    // length we don't know — that is a resize, and dropping it silently would
+    // hide it.
+    let unknown_window = ["primary_window", "secondary_window"]
+        .iter()
+        .map(|key| &json["rate_limit"][*key])
+        .filter(|window| !window.is_null())
+        .any(|window| {
+            !matches!(
+                window["limit_window_seconds"].as_u64(),
+                Some(SESSION_WINDOW_SECS | WEEKLY_WINDOW_SECS)
+            )
+        });
+    let shape_warning = (weekly.is_none() || unknown_window).then(|| {
         "Unexpected API response shape — some usage data may be missing.".to_string()
     });
 
@@ -81,7 +96,7 @@ pub(crate) fn parse_api_response(json: &serde_json::Value) -> ProviderPayload {
         id: GPT_ID.to_string(),
         title: GPT_TITLE.to_string(),
         status: ProviderStatus::Ok,
-        session_percent: session.map(used_percent).unwrap_or(0),
+        session_percent: session.map(used_percent),
         session_resets_at: session.and_then(resets_at),
         weekly_percent: weekly.map(used_percent).unwrap_or(0),
         weekly_resets_at: weekly.and_then(resets_at),
@@ -159,7 +174,7 @@ mod tests {
         assert_eq!(payload.status, ProviderStatus::Ok);
         assert_eq!(payload.id, "gpt");
         assert_eq!(payload.title, "GPT Usage");
-        assert_eq!(payload.session_percent, 12);
+        assert_eq!(payload.session_percent, Some(12));
         assert_eq!(payload.session_resets_at.as_deref(), Some("2023-11-14T22:13:20Z"));
         assert_eq!(payload.weekly_percent, 40);
         assert_eq!(payload.weekly_resets_at.as_deref(), Some("2023-11-15T22:13:20Z"));
@@ -175,16 +190,39 @@ mod tests {
                 "secondary_window": {"used_percent": 12, "limit_window_seconds": 18000}
             }
         }));
-        assert_eq!(payload.session_percent, 12);
+        assert_eq!(payload.session_percent, Some(12));
         assert_eq!(payload.weekly_percent, 40);
         assert_eq!(payload.shape_warning, None);
+    }
+
+    /// The shape a live `prolite` account returned in September 2026: the
+    /// weekly window in `primary_window` and no session window at all.
+    #[test]
+    fn weekly_only_plan_has_no_session_and_no_warning() {
+        let payload = parse_api_response(&serde_json::json!({
+            "plan_type": "prolite",
+            "rate_limit": {
+                "allowed": true,
+                "limit_reached": false,
+                "primary_window": {"used_percent": 1, "limit_window_seconds": 604800,
+                                   "reset_after_seconds": 510847, "reset_at": 1789908822},
+                "secondary_window": null
+            }
+        }));
+        assert_eq!(payload.session_percent, None);
+        assert_eq!(payload.session_resets_at, None);
+        assert_eq!(payload.weekly_percent, 1);
+        assert_eq!(payload.shape_warning, None);
+
+        let value = serde_json::to_value(&payload).unwrap();
+        assert_eq!(value["sessionPercent"], serde_json::Value::Null);
     }
 
     #[test]
     fn missing_rate_limit_warns() {
         let payload = parse_api_response(&serde_json::json!({"plan_type": "plus"}));
         assert!(payload.shape_warning.is_some());
-        assert_eq!(payload.session_percent, 0);
+        assert_eq!(payload.session_percent, None);
     }
 
     #[test]
@@ -196,7 +234,7 @@ mod tests {
             }
         }));
         assert!(payload.shape_warning.is_some());
-        assert_eq!(payload.session_percent, 0);
+        assert_eq!(payload.session_percent, None);
         // Weekly is independent and still parsed.
         assert_eq!(payload.weekly_percent, 40);
     }
@@ -209,7 +247,7 @@ mod tests {
                 "secondary_window": {"used_percent": 140, "limit_window_seconds": 604800}
             }
         }));
-        assert_eq!(payload.session_percent, 33);
+        assert_eq!(payload.session_percent, Some(33));
         assert_eq!(payload.weekly_percent, 100);
     }
 

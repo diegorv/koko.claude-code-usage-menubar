@@ -217,18 +217,20 @@
 				{/if}
 
 				<section class="usage-section">
-					<div class="usage-row">
-						<div class="usage-label">
-							<span>Session (5h)</span>
-							<span class="percent">{provider.sessionPercent}%</span>
+					{#if provider.sessionPercent !== null}
+						<div class="usage-row">
+							<div class="usage-label">
+								<span>Session (5h)</span>
+								<span class="percent">{provider.sessionPercent}%</span>
+							</div>
+							<ProgressBar percent={provider.sessionPercent} color={barColor(provider.sessionPercent, '#6b7fe0')} />
+							{#if provider.sessionResetsAt}
+								<span class="reset-time">
+									Resets in {formatTimeRemaining(provider.sessionResetsAt)}
+								</span>
+							{/if}
 						</div>
-						<ProgressBar percent={provider.sessionPercent} color={barColor(provider.sessionPercent, '#6b7fe0')} />
-						{#if provider.sessionResetsAt}
-							<span class="reset-time">
-								Resets in {formatTimeRemaining(provider.sessionResetsAt)}
-							</span>
-						{/if}
-					</div>
+					{/if}
 
 					<div class="usage-row">
 						<div class="usage-label">

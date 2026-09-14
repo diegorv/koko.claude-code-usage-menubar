@@ -17,7 +17,8 @@ export interface ProviderUsage {
 	id: string;
 	title: string;
 	status: ProviderStatus;
-	sessionPercent: number;
+	// null when the plan has no session window (weekly-only GPT plans).
+	sessionPercent: number | null;
 	sessionResetsAt?: string;
 	weeklyPercent: number;
 	weeklyResetsAt?: string;

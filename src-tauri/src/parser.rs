@@ -11,7 +11,9 @@ pub struct ProviderPayload {
     pub id: String,
     pub title: String,
     pub status: ProviderStatus,
-    pub session_percent: u32,
+    /// None when the plan has no session window at all (GPT accounts on a
+    /// weekly-only limit), so the popup can drop the row instead of showing 0%.
+    pub session_percent: Option<u32>,
     pub session_resets_at: Option<String>,
     pub weekly_percent: u32,
     pub weekly_resets_at: Option<String>,
@@ -80,7 +82,7 @@ impl ProviderPayload {
             id: CLAUDE_ID.to_string(),
             title: CLAUDE_TITLE.to_string(),
             status,
-            session_percent: 0,
+            session_percent: Some(0),
             session_resets_at: None,
             weekly_percent: 0,
             weekly_resets_at: None,
@@ -192,7 +194,7 @@ pub(crate) fn parse_api_response(json: &serde_json::Value) -> ProviderPayload {
         id: CLAUDE_ID.to_string(),
         title: CLAUDE_TITLE.to_string(),
         status: ProviderStatus::Ok,
-        session_percent: clamp(json["five_hour"]["utilization"].as_f64().unwrap_or(0.0)),
+        session_percent: Some(clamp(json["five_hour"]["utilization"].as_f64().unwrap_or(0.0))),
         session_resets_at: json["five_hour"]["resets_at"]
             .as_str()
             .map(String::from),
@@ -236,7 +238,7 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(OK_BODY).unwrap();
         let payload = parse_api_response(&json);
         assert_eq!(payload.status, ProviderStatus::Ok);
-        assert_eq!(payload.session_percent, 45);
+        assert_eq!(payload.session_percent, Some(45));
         assert_eq!(payload.weekly_percent, 67);
         assert_eq!(payload.models.len(), 2);
         assert_eq!(payload.models[0].name, "Sonnet");
@@ -305,7 +307,7 @@ mod tests {
         let payload = classify(200, None, REAL_SHAPE_BODY);
 
         assert_eq!(payload.status, ProviderStatus::Ok);
-        assert_eq!(payload.session_percent, 45);
+        assert_eq!(payload.session_percent, Some(45));
         assert_eq!(payload.weekly_percent, 67);
 
         // Per-model data comes only from limits[] weekly_scoped, never from the
@@ -337,7 +339,7 @@ mod tests {
         let payload = parse_api_response(&json);
         assert!(payload.shape_warning.is_some());
         // Session data still parsed — a shape change shouldn't blank the popup.
-        assert_eq!(payload.session_percent, 10);
+        assert_eq!(payload.session_percent, Some(10));
     }
 
     #[test]
@@ -363,7 +365,7 @@ mod tests {
         )
         .unwrap();
         let payload = parse_api_response(&json);
-        assert_eq!(payload.session_percent, 100);
+        assert_eq!(payload.session_percent, Some(100));
         assert_eq!(payload.weekly_percent, 0);
     }
 
@@ -371,7 +373,7 @@ mod tests {
     fn classify_200_returns_ok() {
         let payload = classify(200, None, OK_BODY);
         assert_eq!(payload.status, ProviderStatus::Ok);
-        assert_eq!(payload.session_percent, 45);
+        assert_eq!(payload.session_percent, Some(45));
     }
 
     #[test]
@@ -525,7 +527,7 @@ mod tests {
             id: "kimi".to_string(),
             title: "Kimi Usage".to_string(),
             status: ProviderStatus::Ok,
-            session_percent: 96,
+            session_percent: Some(96),
             session_resets_at: None,
             weekly_percent: 19,
             weekly_resets_at: None,
