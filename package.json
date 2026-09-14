@@ -12,6 +12,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "tauri": "tauri",
+    "build:mac": "sh scripts/build-signed.sh",
     "audit": "node scripts/quarantine-aware-audit.mjs",
     "outdated": "node scripts/check-outdated-quarantine.mjs"
   },
@@ -19,21 +20,21 @@
   "packageManager": "pnpm@11.2.2",
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",
-    "@tauri-apps/plugin-opener": "^2.5.4",
+    "@tauri-apps/plugin-opener": "^2.5.5",
     "@tauri-apps/plugin-store": "^2.4.4"
   },
   "devDependencies": {
     "@sveltejs/adapter-static": "^3.0.10",
-    "@sveltejs/kit": "^2.57.1",
-    "@sveltejs/vite-plugin-svelte": "^7.2.0",
+    "@sveltejs/kit": "^2.70.3",
+    "@sveltejs/vite-plugin-svelte": "^7.3.0",
     "@tauri-apps/cli": "^2.11.4",
     "jsdom": "^29.1.1",
     "semver": "^7.8.5",
-    "svelte": "^5.55.3",
-    "svelte-check": "^4.7.3",
-    "typescript": "~6.0.3",
-    "vite": "^8.1.5",
-    "vitest": "^4.1.10",
+    "svelte": "^5.57.0",
+    "svelte-check": "^4.7.6",
+    "typescript": "^6.0.3",
+    "vite": "^8.2.2",
+    "vitest": "^4.1.11",
     "yaml": "^2.9.0"
   }
 }

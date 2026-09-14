@@ -99,6 +99,8 @@ export APPLE_SIGNING_IDENTITY="Developer ID Application: … (TEAMID)"
 pnpm tauri build
 ```
 
+`pnpm build:mac` ([scripts/build-signed.sh](scripts/build-signed.sh)) does that export for you: it takes the single "Developer ID Application" identity from `security find-identity -v -p codesigning`, and exits instead of building ad-hoc when there are none or several. An identity already in the environment wins.
+
 Deliberately not in `tauri.conf.json`: hardcoding one developer's identity would break every other build. CI passes the same variable from repository secrets.
 
 Check a build with `codesign -d -r- <app> | grep -c cdhash` — it must print `0`. A `cdhash` in the designated requirement means the build is still ad-hoc, and any keychain grant it holds will die on the next rebuild. See [docs/plans/stable-code-signing.md](docs/plans/stable-code-signing.md).

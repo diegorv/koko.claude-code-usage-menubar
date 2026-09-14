@@ -86,9 +86,10 @@ cargo test  --manifest-path src-tauri/Cargo.toml   # Run Rust tests
 ### Production build
 
 ```bash
-export APPLE_SIGNING_IDENTITY="Developer ID Application: … (TEAMID)"
-pnpm tauri build
+pnpm build:mac
 ```
+
+It finds the "Developer ID Application" certificate in your keychain, exports `APPLE_SIGNING_IDENTITY` and runs `pnpm tauri build`. It stops rather than building ad-hoc when there is no such certificate, and asks you to choose when there is more than one. An `APPLE_SIGNING_IDENTITY` already set in the environment wins.
 
 The app lands in `src-tauri/target/release/bundle/macos/` and the disk image in `bundle/dmg/`.
 
