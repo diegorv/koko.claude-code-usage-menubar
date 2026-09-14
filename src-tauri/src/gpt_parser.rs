@@ -100,8 +100,27 @@ pub(crate) fn parse_api_response(json: &serde_json::Value) -> ProviderPayload {
         session_resets_at: session.and_then(resets_at),
         weekly_percent: weekly.map(used_percent).unwrap_or(0),
         weekly_resets_at: weekly.and_then(resets_at),
-        // The plan limits are shared across models; no per-model breakdown.
-        models: Vec::<ModelPayload>::new(),
+        // Separate per-model limits (GPT-5.3-Codex-Spark so far), the
+        // counterpart of Claude's weekly_scoped entries. Shown by their weekly
+        // window, like Claude's models; an entry without one is skipped. Not
+        // every plan has any, so their absence is not drift.
+        models: json["additional_rate_limits"]
+            .as_array()
+            .map(|limits| {
+                limits
+                    .iter()
+                    .filter_map(|limit| {
+                        let name = limit["limit_name"].as_str()?;
+                        let weekly = find_window(limit, WEEKLY_WINDOW_SECS)?;
+                        Some(ModelPayload {
+                            name: name.to_string(),
+                            percent: used_percent(weekly),
+                            resets_at: resets_at(weekly),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
         extra: ProviderExtra::None,
         error_message: None,
         shape_warning,
@@ -216,6 +235,37 @@ mod tests {
 
         let value = serde_json::to_value(&payload).unwrap();
         assert_eq!(value["sessionPercent"], serde_json::Value::Null);
+    }
+
+    /// Shape of the live `additional_rate_limits` entry, September 2026.
+    #[test]
+    fn additional_rate_limits_become_models_by_weekly_window() {
+        let payload = parse_api_response(&serde_json::json!({
+            "rate_limit": {
+                "primary_window": {"used_percent": 1, "limit_window_seconds": 604800},
+                "secondary_window": null
+            },
+            "additional_rate_limits": [
+                {
+                    "limit_name": "GPT-5.3-Codex-Spark",
+                    "metered_feature": "codex_bengalfox",
+                    "rate_limit": {
+                        "primary_window": {"used_percent": 70, "limit_window_seconds": 18000,
+                                           "reset_at": 1789415976},
+                        "secondary_window": {"used_percent": 25, "limit_window_seconds": 604800,
+                                             "reset_at": 1700000000}
+                    }
+                },
+                {"limit_name": "No weekly", "rate_limit": {
+                    "primary_window": {"used_percent": 5, "limit_window_seconds": 18000}
+                }}
+            ]
+        }));
+        assert_eq!(payload.models.len(), 1);
+        assert_eq!(payload.models[0].name, "GPT-5.3-Codex-Spark");
+        assert_eq!(payload.models[0].percent, 25);
+        assert_eq!(payload.models[0].resets_at.as_deref(), Some("2023-11-14T22:13:20Z"));
+        assert_eq!(payload.shape_warning, None);
     }
 
     #[test]
