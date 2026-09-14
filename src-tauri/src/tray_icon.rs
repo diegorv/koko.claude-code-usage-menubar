@@ -51,11 +51,11 @@ const MARGIN: u32 = 1;
 // other, so every label column is sized from its own glyph plus a shared gap.
 // One width for both bucket letters left 'W' touching its percentage while 'S'
 // had room to spare. Advances in design points, from `print_glyph_advances`:
-// S 7.56, W 11.77, C 8.74, K 7.65.
+// S 7.56, W 11.77, C 8.74, K 7.65, G 9.00.
 const LABEL_GAP: u32 = 5;
 const SESSION_LABEL_WIDTH: u32 = 8 + LABEL_GAP;
 const WEEKLY_LABEL_WIDTH: u32 = 12 + LABEL_GAP;
-// Shared by 'C' and 'K', so sized for the wider of the two.
+// Shared by 'C', 'K' and 'G', so sized for the widest ('G').
 const ROW_LABEL_WIDTH: u32 = 9 + LABEL_GAP - 1;
 const SESSION_CELL_WIDTH: u32 =
     SESSION_LABEL_WIDTH + VALUE_WIDTH + BAR_GAP_FROM_TEXT + BAR_TOTAL_WIDTH;
@@ -84,6 +84,9 @@ pub(crate) const COLOR_CLAUDE: Rgba<u8> = Rgba([192, 96, 208, 255]);
 // already uses (#4db6a0), distinct from Claude's purple and the warning
 // amber, and proven legible on light and dark surfaces.
 pub(crate) const COLOR_KIMI: Rgba<u8> = Rgba([77, 182, 160, 255]);
+// GPT's identity color: the blue the popup uses for session bars (#6b7fe0),
+// clear of Claude's purple, Kimi's teal, and the warning amber / critical red.
+pub(crate) const COLOR_GPT: Rgba<u8> = Rgba([107, 127, 224, 255]);
 const COLOR_SEGMENT_OFF: Rgba<u8> = Rgba([140, 140, 140, 80]);
 const COLOR_WARNING: Rgba<u8> = Rgba([224, 160, 48, 255]);
 const COLOR_CRITICAL: Rgba<u8> = Rgba([224, 80, 80, 255]);
@@ -430,7 +433,7 @@ mod tests {
     fn print_glyph_advances() {
         use ab_glyph::{Font, ScaleFont};
         let scaled = FONT.as_scaled(FONT_SIZE);
-        for c in ['S', 'W', 'C', 'K', '0', '1', '%'] {
+        for c in ['S', 'W', 'C', 'K', 'G', '0', '1', '%'] {
             let advance = scaled.h_advance(FONT.glyph_id(c));
             println!("{c}: {advance:.2}px = {:.2}pt", advance / SCALE as f32);
         }

@@ -5,6 +5,15 @@
 	import { invoke } from '@tauri-apps/api/core';
 	import { appState } from '$lib/store.svelte';
 	import { barColor, formatTimeRemaining, type UsageData } from '$lib/usage';
+	import {
+		MAX_TRAY_PROVIDERS,
+		PROVIDER_IDS,
+		PROVIDER_NAMES,
+		trayCount,
+		withEnabled,
+		withTray,
+		type ProviderSettings
+	} from '$lib/providers';
 	import ProgressBar from './ProgressBar.svelte';
 
 	let usage = $state<UsageData | null>(null);
@@ -31,6 +40,22 @@
 	let kimiKeyError = $state('');
 
 	const keyStatusLabel = { saved: 'Saved', none: 'Not saved', unknown: 'Unknown' };
+
+	let providerSettings = $state<ProviderSettings>(appState.providerSettings);
+	let providerSettingsError = $state('');
+	const trayFull = $derived(trayCount(providerSettings) >= MAX_TRAY_PROVIDERS);
+
+	async function applyProviderSettings(next: ProviderSettings) {
+		providerSettings = next;
+		providerSettingsError = '';
+		const snapshot = $state.snapshot(next);
+		await appState.saveProviderSettings(snapshot);
+		try {
+			await invoke('set_provider_settings', { settings: snapshot });
+		} catch (e) {
+			providerSettingsError = String(e);
+		}
+	}
 
 	async function refreshKeyStatus() {
 		try {
@@ -129,6 +154,8 @@
 		void settingsOpen;
 		void kimiKeyError;
 		void keyStatus;
+		void providerSettings;
+		void providerSettingsError;
 		fitWindowToContent();
 	});
 
@@ -147,6 +174,7 @@
 
 		await appState.loadSettings();
 		selectedInterval = appState.intervalSeconds;
+		providerSettings = appState.providerSettings;
 
 		// Listen for usage updates from Rust-side polling
 		unlisten = await listen<UsageData>('usage_updated', (event) => {
@@ -270,6 +298,41 @@
 		{#if settingsOpen}
 			<div class="settings-panel">
 				<div class="settings-header">
+					<span>Providers</span>
+					<span class="key-status">Tray {trayCount(providerSettings)}/{MAX_TRAY_PROVIDERS}</span>
+				</div>
+				{#each PROVIDER_IDS as id (id)}
+					{@const toggle = providerSettings[id]}
+					<div class="provider-toggle">
+						<span class="provider-name">{PROVIDER_NAMES[id]}</span>
+						<label>
+							<input
+								type="checkbox"
+								checked={toggle.enabled}
+								onchange={(e) =>
+									applyProviderSettings(withEnabled(providerSettings, id, e.currentTarget.checked))}
+							/>
+							On
+						</label>
+						<label>
+							<input
+								type="checkbox"
+								checked={toggle.tray}
+								disabled={!toggle.enabled || (!toggle.tray && trayFull)}
+								onchange={(e) =>
+									applyProviderSettings(withTray(providerSettings, id, e.currentTarget.checked))}
+							/>
+							Tray
+						</label>
+					</div>
+				{/each}
+				{#if providerSettings.gpt.enabled}
+					<span class="settings-hint">GPT reads your Codex CLI login (~/.codex/auth.json).</span>
+				{/if}
+				{#if providerSettingsError}
+					<span class="settings-error">{providerSettingsError}</span>
+				{/if}
+				<div class="settings-header settings-section">
 					<span>Kimi API Key</span>
 					<span
 						class="key-status"
@@ -498,6 +561,35 @@
 		align-items: baseline;
 		font-size: 12px;
 		font-weight: 500;
+	}
+
+	.settings-section {
+		margin-top: 4px;
+		padding-top: 10px;
+		border-top: 1px solid var(--popup-border);
+	}
+
+	.provider-toggle {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		font-size: 12px;
+	}
+
+	.provider-name {
+		flex: 1;
+	}
+
+	.provider-toggle label {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		cursor: pointer;
+	}
+
+	.provider-toggle label:has(input:disabled) {
+		opacity: 0.5;
+		cursor: default;
 	}
 
 	.key-status {

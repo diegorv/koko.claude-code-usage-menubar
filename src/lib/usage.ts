@@ -7,10 +7,11 @@ export interface ModelUsage {
 export type ProviderStatus = 'ok' | 'auth_error' | 'rate_limited' | 'disabled' | 'error';
 
 // Provider-specific metrics, narrowed by `kind`. Claude reports Extra Usage;
-// Kimi reports parallel sessions.
+// Kimi reports parallel sessions; GPT reports nothing extra.
 export type ProviderExtra =
 	| { kind: 'extra_usage'; enabled: boolean; percent: number }
-	| { kind: 'parallel'; used: number; limit: number };
+	| { kind: 'parallel'; used: number; limit: number }
+	| { kind: 'none' };
 
 export interface ProviderUsage {
 	id: string;

@@ -1,4 +1,5 @@
 mod commands;
+mod gpt_parser;
 mod kimi_parser;
 mod parser;
 mod state;
@@ -28,6 +29,7 @@ pub fn run() {
             commands::save_kimi_key,
             commands::delete_kimi_key,
             commands::has_kimi_key,
+            commands::set_provider_settings,
         ])
         .setup(setup_app)
         .on_window_event(handle_window_event)
@@ -39,10 +41,15 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "macos")]
     app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
+    // Before the poller starts: its first fetch reads these.
+    app.manage(state::ProviderSettingsState::new(
+        read_saved_providers(app).unwrap_or_default(),
+    ));
+
     let handle = app.handle();
 
     // Generate initial tray icon with empty progress bars. One row, Claude's:
-    // no fetch has happened yet, and Claude is always the first provider.
+    // no fetch has happened yet. The first refresh repaints it from settings.
     let icon = tray_icon::generate_icon(vec![('C', 0.0, 0.0, tray_icon::COLOR_CLAUDE)]);
 
     // Create system tray (no native menu)
@@ -79,6 +86,14 @@ fn read_saved_interval(app: &tauri::App) -> Option<u64> {
     let contents = std::fs::read_to_string(settings_path).ok()?;
     let json: serde_json::Value = serde_json::from_str(&contents).ok()?;
     json.get("intervalSeconds")?.as_u64()
+}
+
+/// Reads the saved provider toggles (written by the popup's Settings panel).
+fn read_saved_providers(app: &tauri::App) -> Option<state::ProviderSettings> {
+    let app_data = app.path().app_data_dir().ok()?;
+    let contents = std::fs::read_to_string(app_data.join("settings.json")).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&contents).ok()?;
+    serde_json::from_value(json.get("providers")?.clone()).ok()
 }
 
 fn toggle_popup(app: &tauri::AppHandle, click_position: PhysicalPosition<f64>) {

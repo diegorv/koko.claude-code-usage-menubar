@@ -42,12 +42,14 @@ pub enum ProviderStatus {
 }
 
 /// Provider-specific metrics, tagged so the frontend can narrow by `kind`.
-/// Claude reports Extra Usage; Kimi reports parallel sessions.
+/// Claude reports Extra Usage; Kimi reports parallel sessions; GPT reports
+/// nothing beyond its two windows.
 #[derive(Clone, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProviderExtra {
     ExtraUsage { enabled: bool, percent: u32 },
     Parallel { used: u32, limit: u32 },
+    None,
 }
 
 #[derive(Clone, serde::Serialize)]

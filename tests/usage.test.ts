@@ -106,10 +106,15 @@ describe('provider payload contract', () => {
 		const describe_ = (p: ProviderUsage): string =>
 			p.extra.kind === 'parallel'
 				? `${p.extra.used}/${p.extra.limit}`
-				: `${p.extra.percent}%`;
+				: p.extra.kind === 'extra_usage'
+					? `${p.extra.percent}%`
+					: '';
+
+		const gpt: ProviderUsage = { ...kimi, id: 'gpt', title: 'GPT Usage', extra: { kind: 'none' } };
 
 		expect(describe_(kimi)).toBe('6/30');
 		expect(describe_(claude)).toBe('0%');
+		expect(describe_(gpt)).toBe('');
 	});
 
 	it('carries both providers in one payload, Claude first', () => {
