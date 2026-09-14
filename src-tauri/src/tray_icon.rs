@@ -158,8 +158,9 @@ fn menubar_is_dark_cached() -> bool {
 }
 
 /// One painted row: provider label, session and weekly in 0.0..=1.0, and the
-/// provider's identity color.
-pub type TrayRow = (char, f64, f64, Rgba<u8>);
+/// provider's identity color. Session is None when the plan has no session
+/// window (weekly-only GPT plans).
+pub type TrayRow = (char, Option<f64>, f64, Rgba<u8>);
 
 /// Generates a dynamic tray icon, one row per provider, top to bottom. Each
 /// row paints two cells: session on the left, weekly on the right.
@@ -197,7 +198,7 @@ fn draw_row(
     font: &FontArc,
     line_y: u32,
     label: char,
-    session: f64,
+    session: Option<f64>,
     weekly: f64,
     color: Rgba<u8>,
     text_color: Rgba<u8>,
@@ -220,7 +221,7 @@ fn draw_row(
         font,
         line_y,
         Cell { x: WEEKLY_CELL_X, label: 'W', label_width: WEEKLY_LABEL_WIDTH },
-        weekly,
+        Some(weekly),
         color,
         text_color,
     );
@@ -240,13 +241,18 @@ fn draw_cell(
     font: &FontArc,
     line_y: u32,
     cell: Cell,
-    pct: f64,
+    pct: Option<f64>,
     color: Rgba<u8>,
     text_color: Rgba<u8>,
 ) {
-    let clamped = pct.clamp(0.0, 1.0);
-    let pct_int = (clamped * 100.0).round() as u32;
-    let value_str = format!("{:02}%", pct_int);
+    // None means the plan has no such window: "--" and an unlit bar, because
+    // "00%" reads as a real figure that just happens to be idle.
+    let clamped = pct.map(|p| p.clamp(0.0, 1.0));
+    let pct_int = clamped.map(|c| (c * 100.0).round() as u32);
+    let value_str = match pct_int {
+        Some(n) => format!("{:02}%", n),
+        None => "--".to_string(),
+    };
 
     // Draw label and value separately so percentages align vertically
     let text_y = (line_y * SCALE) as i32 + TEXT_Y_OFFSET;
@@ -259,9 +265,9 @@ fn draw_cell(
     // Draw segmented bar
     let bar_x = cell.x + cell.label_width + VALUE_WIDTH + BAR_GAP_FROM_TEXT;
     let bar_y = line_y + (LINE_HEIGHT - SEGMENT_HEIGHT) / 2;
-    let filled = filled_segments(clamped);
+    let filled = clamped.map_or(0, filled_segments);
 
-    let filled_color = bar_color(pct_int, color);
+    let filled_color = bar_color(pct_int.unwrap_or(0), color);
 
     for i in 0..NUM_SEGMENTS {
         let seg_x = (bar_x + i * (SEGMENT_WIDTH + SEGMENT_GAP)) * SCALE;
@@ -281,10 +287,10 @@ mod tests {
     use super::*;
 
     /// One grid row per provider, the shape every caller passes.
-    fn grid_rows(pairs: &[(char, f64, f64)]) -> Vec<(char, f64, f64, Rgba<u8>)> {
+    fn grid_rows(pairs: &[(char, f64, f64)]) -> Vec<TrayRow> {
         pairs
             .iter()
-            .map(|&(label, session, weekly)| (label, session, weekly, COLOR_CLAUDE))
+            .map(|&(label, session, weekly)| (label, Some(session), weekly, COLOR_CLAUDE))
             .collect()
     }
 
@@ -399,7 +405,7 @@ mod tests {
         // The whole point of the provider color: a row is one hue, so two
         // providers never share one. Sampled below the warning threshold, where
         // the identity color is what bar_color returns.
-        let icon = generate_icon(vec![('K', 0.2, 0.2, COLOR_KIMI)]);
+        let icon = generate_icon(vec![('K', Some(0.2), 0.2, COLOR_KIMI)]);
         let rgba = icon.rgba();
         let (top, _) = band_pixels(1, 0);
         let y = top + (SEGMENT_HEIGHT * SCALE / 2) as usize;
@@ -423,6 +429,19 @@ mod tests {
         assert!(region_painted(rgba, bar_x, bar_x + BAR_TOTAL_WIDTH * SCALE, top, bottom));
     }
 
+    #[test]
+    fn a_missing_session_lights_no_segment() {
+        // Weekly-only plan: the session bar stays unlit even though the weekly
+        // figure beside it is full.
+        let icon = generate_icon(vec![('G', None, 1.0, COLOR_GPT)]);
+        let rgba = icon.rgba();
+        let (top, _) = band_pixels(1, 0);
+        let y = top + (SEGMENT_HEIGHT * SCALE / 2) as usize;
+        let x = ((SESSION_CELL_X + SESSION_LABEL_WIDTH + VALUE_WIDTH + BAR_GAP_FROM_TEXT) * SCALE + 1) as usize;
+        let i = (y * ICON_WIDTH as usize + x) * 4;
+        assert_eq!(&rgba[i..i + 4], &COLOR_SEGMENT_OFF.0[..]);
+    }
+
     /// Writes the icon out so a human can look at it. The label widths are
     /// glyph-metric guesses that only an eye can check — every assertion in
     /// this module passes on a layout whose text overlaps.
@@ -444,8 +463,9 @@ mod tests {
     fn dump_icon_png() {
         let dir = std::env::var("ICON_DUMP_DIR").unwrap();
         for (name, rows) in [
-            ("two", vec![('C', 0.12, 0.45, COLOR_CLAUDE), ('K', 0.30, 1.0, COLOR_KIMI)]),
-            ("one", vec![('C', 0.07, 0.96, COLOR_CLAUDE)]),
+            ("two", vec![('C', Some(0.12), 0.45, COLOR_CLAUDE), ('K', Some(0.30), 1.0, COLOR_KIMI)]),
+            ("one", vec![('C', Some(0.07), 0.96, COLOR_CLAUDE)]),
+            ("weekly_only", vec![('C', Some(0.40), 0.45, COLOR_CLAUDE), ('G', None, 0.01, COLOR_GPT)]),
         ] {
             let icon = generate_icon(rows);
             let img = RgbaImage::from_raw(ICON_WIDTH, ICON_HEIGHT, icon.rgba().to_vec()).unwrap();

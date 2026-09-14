@@ -308,9 +308,7 @@ fn tray_rows(
                 let (label, color, _) = tray_identity(&p.id);
                 (
                     label,
-                    // A weekly-only plan has no session figure; the grid row
-                    // still needs one, and an empty bar is the honest one.
-                    p.session_percent.unwrap_or(0) as f64 / 100.0,
+                    p.session_percent.map(|s| s as f64 / 100.0),
                     p.weekly_percent as f64 / 100.0,
                     color,
                 )
@@ -511,7 +509,7 @@ mod tests {
         let rows = tray_rows(&payload, &defaults()).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].0, 'C');
-        assert_eq!(rows[0].1, 45.0 / 100.0);
+        assert_eq!(rows[0].1, Some(45.0 / 100.0));
         assert_eq!(rows[0].2, 67.0 / 100.0);
         assert_eq!(rows[0].3, crate::tray_icon::COLOR_CLAUDE);
     }
@@ -527,10 +525,10 @@ mod tests {
         // Both figures survive the second provider — the whole point of the
         // grid layout. A second provider costs a row, not the session numbers.
         assert_eq!(rows[0].0, 'C');
-        assert_eq!(rows[0].1, 45.0 / 100.0);
+        assert_eq!(rows[0].1, Some(45.0 / 100.0));
         assert_eq!(rows[0].2, 67.0 / 100.0);
         assert_eq!(rows[1].0, 'K');
-        assert_eq!(rows[1].1, 96.0 / 100.0);
+        assert_eq!(rows[1].1, Some(96.0 / 100.0));
         assert_eq!(rows[1].2, 19.0 / 100.0);
         // Distinct per-provider colors — the whole row is painted in one.
         assert_eq!(rows[0].3, crate::tray_icon::COLOR_CLAUDE);
@@ -557,7 +555,7 @@ mod tests {
         let rows = tray_rows(&payload, &defaults()).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].0, 'C');
-        assert_eq!(rows[0].1, 45.0 / 100.0);
+        assert_eq!(rows[0].1, Some(45.0 / 100.0));
         assert_eq!(rows[0].2, 67.0 / 100.0);
         assert_eq!(rows[0].3, crate::tray_icon::COLOR_CLAUDE);
     }
@@ -573,9 +571,22 @@ mod tests {
         // Kimi's label and color, not Claude's: this row is the whole icon, so
         // painting it in Claude's purple made Kimi's numbers read as Claude's.
         assert_eq!(rows[0].0, 'K');
-        assert_eq!(rows[0].1, 96.0 / 100.0);
+        assert_eq!(rows[0].1, Some(96.0 / 100.0));
         assert_eq!(rows[0].2, 19.0 / 100.0);
         assert_eq!(rows[0].3, crate::tray_icon::COLOR_KIMI);
+    }
+
+    #[test]
+    fn weekly_only_provider_paints_no_session_figure() {
+        // No session window is carried through as None, so the icon can say
+        // "--" instead of a 0% that looks like a real, idle figure.
+        let mut gpt = provider("gpt", ProviderStatus::Ok, 0, 1);
+        gpt.session_percent = None;
+        let payload = UsagePayload::new(vec![gpt]);
+        let rows = tray_rows(&payload, &tray_picks(false, false, true)).unwrap();
+        assert_eq!(rows[0].0, 'G');
+        assert_eq!(rows[0].1, None);
+        assert_eq!(rows[0].2, 1.0 / 100.0);
     }
 
     #[test]
@@ -647,7 +658,7 @@ mod tests {
         let settings = tray_picks(false, true, true);
         let rows = tray_rows(&payload, &settings).unwrap();
         assert_eq!(labels(&rows), vec!['K', 'G']);
-        assert_eq!(rows[1].1, 10.0 / 100.0);
+        assert_eq!(rows[1].1, Some(10.0 / 100.0));
         assert_eq!(rows[1].3, crate::tray_icon::COLOR_GPT);
         assert_eq!(tray_tooltip(&payload, &settings), "Kimi + GPT Usage");
     }

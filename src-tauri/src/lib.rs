@@ -50,7 +50,7 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 
     // Generate initial tray icon with empty progress bars. One row, Claude's:
     // no fetch has happened yet. The first refresh repaints it from settings.
-    let icon = tray_icon::generate_icon(vec![('C', 0.0, 0.0, tray_icon::COLOR_CLAUDE)]);
+    let icon = tray_icon::generate_icon(vec![('C', Some(0.0), 0.0, tray_icon::COLOR_CLAUDE)]);
 
     // Create system tray (no native menu)
     TrayIconBuilder::with_id("main-tray")
