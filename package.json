@@ -1,6 +1,6 @@
 {
   "name": "claude-code-usage-menubar",
-  "version": "0.4.3-alpha",
+  "version": "0.4.4-alpha",
   "description": "",
   "type": "module",
   "scripts": {
