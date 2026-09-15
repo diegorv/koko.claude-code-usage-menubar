@@ -155,7 +155,8 @@ jobs:
 
             Compare the output with the corresponding entry in `checksums-sha256.txt`.
           releaseDraft: false
-          prerelease: false
+          # Channel tags (-alpha, -beta, -rc.N) are pre-releases; plain X.Y.Z is stable.
+          prerelease: ${{ contains(github.ref_name, '-') }}
 
       # tauri-action notarizes and staples the .app, then wraps it in a DMG
       # — but the DMG itself never goes through the notary service. Opening
@@ -208,22 +209,26 @@ jobs:
           # Replace the copy tauri-action already uploaded with the stapled one.
           gh release upload "${{ github.ref_name }}" "$DMG" --clobber
 
+      # Hash the assets as published, not the local bundle: tauri-action
+      # renames the tarball on upload (`<name>_aarch64.app.tar.gz`), so
+      # hashing the bundle directory lists paths users never download and
+      # `shasum -c` fails for them.
       - name: Generate SHA-256 checksums
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          cd src-tauri/target/aarch64-apple-darwin/release/bundle
-          CHECKSUM_FILE="checksums-sha256.txt"
-          find . -type f \( -name "*.dmg" -o -name "*.app.tar.gz" -o -name "*.app.tar.gz.sig" \) | sort | sed 's|^\./||' | while read -r file; do
-            shasum -a 256 "$file" >> "$CHECKSUM_FILE"
-          done
+          mkdir -p release-assets
+          cd release-assets
+          gh release download "${{ github.ref_name }}" \
+            --pattern "*.dmg" --pattern "*.app.tar.gz" --pattern "*.app.tar.gz.sig"
+          shasum -a 256 * > ../checksums-sha256.txt
           echo "--- Checksums ---"
-          cat "$CHECKSUM_FILE"
+          cat ../checksums-sha256.txt
 
       - name: Upload checksums to release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          gh release upload "${{ github.ref_name }}" \
-            src-tauri/target/aarch64-apple-darwin/release/bundle/checksums-sha256.txt \
-            --clobber
+          gh release upload "${{ github.ref_name }}" checksums-sha256.txt --clobber
